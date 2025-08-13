@@ -11,7 +11,6 @@ GameObject:
   - component: {fileID: 7583188096249432880}
   - component: {fileID: 7284121706268300505}
   - component: {fileID: 6650765704981341721}
-  - component: {fileID: 3977789625342024693}
   - component: {fileID: 8605732330195443887}
   - component: {fileID: 2696271716001579772}
   - component: {fileID: 62461420181524856}
@@ -93,29 +92,6 @@ MeshRenderer:
   m_SortingLayer: 0
   m_SortingOrder: 0
   m_AdditionalVertexStreams: {fileID: 0}
---- !u!136 &3977789625342024693
-CapsuleCollider:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 7934740045643598440}
-  m_Material: {fileID: 0}
-  m_IncludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_ExcludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_LayerOverridePriority: 0
-  m_IsTrigger: 0
-  m_ProvidesContacts: 0
-  m_Enabled: 1
-  serializedVersion: 2
-  m_Radius: 0.5
-  m_Height: 2
-  m_Direction: 1
-  m_Center: {x: 0, y: 0, z: 0}
 --- !u!114 &8605732330195443887
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -150,12 +126,23 @@ MonoBehaviour:
   syncInterval: 0
   moveSpeed: 6
   sprintMultiplier: 1.5
-  turnSpeed: 360
-  snapDistance: 2
-  lerpRate: 12
+  useGravity: 1
   gravity: -19.6
-  groundStick: -2
-  jumpSpeed: 6
+  groundStickForce: -0.5
+  jumpHeight: 1.2
+  coyoteTime: 0.1
+  jumpBuffer: 0.1
+  localCorrectionLerp: 8
+  localSnapDistance: 2.5
+  groundMask:
+    serializedVersion: 2
+    m_Bits: 65
+  interpBackTime: 0.1
+  snapshotBufferSize: 32
+  stateSendInterval: 0.05
+  autoFitController: 1
+  minRadius: 0.25
+  liftEpsilon: 0.02
 --- !u!114 &62461420181524856
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -172,8 +159,6 @@ MonoBehaviour:
   syncMode: 0
   syncInterval: 0
   mouseXSensitivity: 2.25
-  requireMouseButtonForRotate: 0
-  rotateMouseButton: 1
   lockCursorOnStart: 1
 --- !u!143 &6315846858979065771
 CharacterController:
@@ -195,9 +180,9 @@ CharacterController:
   serializedVersion: 3
   m_Height: 2
   m_Radius: 0.5
-  m_SlopeLimit: 45
+  m_SlopeLimit: 55
   m_StepOffset: 0.3
-  m_SkinWidth: 0.08
+  m_SkinWidth: 0.05
   m_MinMoveDistance: 0.001
   m_Center: {x: 0, y: 0, z: 0}
 --- !u!114 &7920408522667994078
