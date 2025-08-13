@@ -16,6 +16,8 @@ GameObject:
   - component: {fileID: 62461420181524856}
   - component: {fileID: 6315846858979065771}
   - component: {fileID: 7920408522667994078}
+  - component: {fileID: 2555144945125893032}
+  - component: {fileID: 7487298496893498173}
   m_Layer: 3
   m_Name: MmoPlayer
   m_TagString: Untagged
@@ -132,6 +134,7 @@ MonoBehaviour:
   jumpHeight: 1.2
   coyoteTime: 0.1
   jumpBuffer: 0.1
+  jumpTakeoffGrace: 0.08
   localCorrectionLerp: 8
   localSnapDistance: 2.5
   groundMask:
@@ -217,6 +220,38 @@ MonoBehaviour:
     m_Bits: 55
   distanceLerp: 12
   pivotLerp: 14
+--- !u!114 &2555144945125893032
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7934740045643598440}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7c6b5e5b4c6936140b2788ab8b1c7572, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  syncDirection: 0
+  syncMode: 0
+  syncInterval: 0
+--- !u!114 &7487298496893498173
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7934740045643598440}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bda9f5bb058dabb419fd0829dfad21b1, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  syncDirection: 0
+  syncMode: 0
+  syncInterval: 0
+  displayName: 
+  _worldLabel: {fileID: 0}
 --- !u!1 &8304326361285448762
 GameObject:
   m_ObjectHideFlags: 0
