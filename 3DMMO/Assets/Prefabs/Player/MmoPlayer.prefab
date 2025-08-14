@@ -268,8 +268,8 @@ MonoBehaviour:
   syncDirection: 0
   syncMode: 0
   syncInterval: 0
-  backpackSize: 21
-  equipmentSize: 8
+  backpackCapacity: 28
+  equipLayout: 8000000001000000020000000400000010000000080000002000000040000000
   itemLookup: {fileID: 0}
 --- !u!114 &7733239264075376872
 MonoBehaviour:
@@ -286,17 +286,44 @@ MonoBehaviour:
   syncDirection: 0
   syncMode: 0
   syncInterval: 0
+  target: {fileID: 0}
+  itemLookupOverride: {fileID: 0}
   seedOnServerStart: 1
-  destroyAfterSeeding: 1
-  editorOnly: 1
-  verbose: 1
-  grants:
-  - itemId: 1
-    count: 1
-  - itemId: 2
-    count: 1
-  - itemId: 3
-    count: 1
+  onlyIfEmpty: 1
+  clearBackpackFirst: 0
+  items:
+  - def: {fileID: 11400000, guid: e6ac6957e7b79d14fa18b1d550963f70, type: 2}
+    itemId: 4
+    legacyNumericId: 1
+    amount: 1
+  - def: {fileID: 11400000, guid: b4811dd41e3a2c048a48e7aab0d9e942, type: 2}
+    itemId: 7
+    legacyNumericId: 1
+    amount: 1
+  - def: {fileID: 11400000, guid: bd634a3047c65944f991f4f4c1b6abe4, type: 2}
+    itemId: 6
+    legacyNumericId: 1
+    amount: 1
+  - def: {fileID: 11400000, guid: a89246fbc82936944a567136b3830331, type: 2}
+    itemId: 5
+    legacyNumericId: 1
+    amount: 1
+  - def: {fileID: 11400000, guid: 28eb58aee489a4b4bb6585a10468675f, type: 2}
+    itemId: 8
+    legacyNumericId: 1
+    amount: 1
+  - def: {fileID: 11400000, guid: 168a2d68b1e80c94dbbbc2ade188ec27, type: 2}
+    itemId: 3
+    legacyNumericId: 1
+    amount: 1
+  - def: {fileID: 11400000, guid: 1779846d8e23a0e4ba7d9f9a0d267d94, type: 2}
+    itemId: 2
+    legacyNumericId: 1
+    amount: 1
+  - def: {fileID: 11400000, guid: f1a135b49e905494ab69660dd5809f8b, type: 2}
+    itemId: 1
+    legacyNumericId: 1
+    amount: 1
 --- !u!1 &8304326361285448762
 GameObject:
   m_ObjectHideFlags: 0

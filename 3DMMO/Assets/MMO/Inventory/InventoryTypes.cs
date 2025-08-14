@@ -8,19 +8,7 @@ namespace MMO.Inventory
 {
     // Equipment slots (expand as needed)
     [Flags]
-    public enum EquipSlot : int
-    {
-        None = 0,
-        Head = 1 << 0,
-        Chest = 1 << 1,
-        Legs = 1 << 2,
-        Feet = 1 << 3,
-        Hands = 1 << 4,
-        MainHand = 1 << 5,
-        OffHand = 1 << 6,
-        Accessory = 1 << 7,
-    }
-
+    
     public enum ContainerKind : byte
     {
         Backpack = 0,

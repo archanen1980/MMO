@@ -1,484 +1,557 @@
 using System;
-using System.Reflection;                 // reflection helpers for equip mask + itemId parsing
-using Mirror;
+using System.Linq;
+using System.Reflection;
 using UnityEngine;
-using MMO.Shared.Item;                    // YOUR ItemDef base
+using Mirror;
+using MMO.Shared.Item; // ItemDef, ItemKind, EquipSlot
+
+// Alias for readability
+using EquipSlotAlias = MMO.Shared.Item.EquipSlot;
 
 namespace MMO.Inventory
 {
-    // Server-authoritative inventory for Mirror
+    /// <summary>
+    /// Mirror-synced player inventory & equipment.
+    /// - Backpack: grid of stackable InvSlot entries.
+    /// - Equipment: fixed-size array; each index maps to a chosen EquipSlot (configurable in inspector).
+    /// </summary>
     public class PlayerInventory : NetworkBehaviour
     {
-        [Header("Config")]
-        [SerializeField, Min(1)] int backpackSize = 24;
-        [SerializeField, Min(1)] int equipmentSize = 8;
+        // ---------- Inspector ----------
+        [Header("Backpack")]
+        [SerializeField] int backpackCapacity = 28; // e.g., 7x4
 
-        // Hard caps to prevent runaway allocations / editor hangs
-        const int MAX_BACKPACK_SLOTS = 200;
-        const int MAX_EQUIP_SLOTS = 32;
+        [Header("Equipment Layout (left → right)")]
+        [Tooltip("Which EquipSlot each equipment index represents (index 0 is the leftmost slot in your EquipmentGrid).")]
+        [SerializeField]
+        EquipSlotAlias[] equipLayout =
+        {
+            EquipSlotAlias.Head,      // 0
+            EquipSlotAlias.Chest,     // 1
+            EquipSlotAlias.Legs,      // 2
+            EquipSlotAlias.Hands,     // 3
+            EquipSlotAlias.Feet,      // 4
+            EquipSlotAlias.MainHand,  // 5
+            EquipSlotAlias.OffHand,   // 6
+            EquipSlotAlias.Accessory, // 7
+        };
 
-        [SerializeField, HideInInspector] ResourcesItemLookup itemLookup; // scene singleton; hidden to avoid prefab confusion
+        [Header("Lookups (optional)")]
+        [Tooltip("Optional: assign your ResourcesItemLookup (or similar). If empty, code falls back to Resources/Items.")]
+        public UnityEngine.Object itemLookup;
 
-        // Mirror sync state
+        // ---------- Sync Data ----------
         public readonly SyncList<InvSlot> Backpack = new SyncList<InvSlot>();
-        public readonly SyncList<InvSlot> Equipment = new SyncList<InvSlot>();
+        public readonly SyncList<InvSlot> Equipped = new SyncList<InvSlot>();
 
-        // UI hook (client-only)
+        // ---------- UI Events ----------
+        public event Action OnBackpackChanged;
+        public event Action OnEquippedChanged;
+        // Back-compat event name some UIs already subscribe to:
         public event Action OnClientInventoryChanged;
 
-        void OnValidate()
+        // Back-compat property aliases
+        public SyncList<InvSlot> Equipment => Equipped;
+        public SyncList<InvSlot> Inventory => Backpack;
+
+        // Public info for UI
+        public const int DefaultEquipCount = 8;
+        public int EquipCount => equipLayout != null && equipLayout.Length > 0 ? equipLayout.Length : DefaultEquipCount;
+
+        // Index <-> EquipSlot mapping (uses the inspector-driven layout)
+        public EquipSlotAlias IndexToSlot(int index)
+            => (index >= 0 && index < EquipCount) ? equipLayout[index] : EquipSlotAlias.None;
+
+        public int SlotToIndex(EquipSlotAlias slot)
         {
-            if (backpackSize < 1) backpackSize = 1;
-            if (equipmentSize < 1) equipmentSize = 1;
-            if (backpackSize > MAX_BACKPACK_SLOTS) backpackSize = MAX_BACKPACK_SLOTS;
-            if (equipmentSize > MAX_EQUIP_SLOTS) equipmentSize = MAX_EQUIP_SLOTS;
+            if (equipLayout == null) return -1;
+            for (int i = 0; i < equipLayout.Length; i++)
+                if (equipLayout[i] == slot) return i;
+            return -1;
         }
 
-        #region Mirror lifecycle
+#if UNITY_EDITOR
+        void OnValidate()
+        {
+            // Keep layout non-null and at least DefaultEquipCount long for convenience
+            if (equipLayout == null || equipLayout.Length == 0)
+                equipLayout = new[] {
+                    EquipSlotAlias.Head, EquipSlotAlias.Chest, EquipSlotAlias.Legs, EquipSlotAlias.Hands,
+                    EquipSlotAlias.Feet, EquipSlotAlias.MainHand, EquipSlotAlias.OffHand, EquipSlotAlias.Accessory
+                };
+
+            // Sanitize entries: force to single-bit flags (no multi-bit combos for a position)
+            for (int i = 0; i < equipLayout.Length; i++)
+                equipLayout[i] = SanitizeSingleFlag(equipLayout[i]);
+        }
+
+        static EquipSlotAlias SanitizeSingleFlag(EquipSlotAlias v)
+        {
+            // If it's exactly one known flag, keep it. Otherwise coerce "None".
+            switch (v)
+            {
+                case EquipSlotAlias.None:
+                case EquipSlotAlias.Head:
+                case EquipSlotAlias.Chest:
+                case EquipSlotAlias.Legs:
+                case EquipSlotAlias.Hands:
+                case EquipSlotAlias.Feet:
+                case EquipSlotAlias.MainHand:
+                case EquipSlotAlias.OffHand:
+                case EquipSlotAlias.Accessory:
+                    return v;
+                default:
+                    return EquipSlotAlias.None;
+            }
+        }
+#endif
+
+        // ---------- Mirror lifecycle ----------
         public override void OnStartServer()
         {
             base.OnStartServer();
-            int bp = Mathf.Clamp(backpackSize, 1, MAX_BACKPACK_SLOTS);
-            int eq = Mathf.Clamp(equipmentSize, 1, MAX_EQUIP_SLOTS);
-            ServerEnsureSize(Backpack, bp);
-            ServerEnsureSize(Equipment, eq);
-            Debug.Log($"[PlayerInventory] ServerEnsureSize -> Backpack:{Backpack.Count} Equipment:{Equipment.Count}");
+            EnsureCapacities();
         }
 
         public override void OnStartClient()
         {
             base.OnStartClient();
-            Backpack.Callback += OnSyncListChanged;
-            Equipment.Callback += OnSyncListChanged;
+            EnsureCapacities();
+
+            Backpack.Callback += OnBackpackSyncChanged;
+            Equipped.Callback += OnEquippedSyncChanged;
+
+            // Initial UI notify
             OnClientInventoryChanged?.Invoke();
+            OnBackpackChanged?.Invoke();
+            OnEquippedChanged?.Invoke();
         }
 
-        public override void OnStopClient()
+        void OnDestroy()
         {
-            Backpack.Callback -= OnSyncListChanged;
-            Equipment.Callback -= OnSyncListChanged;
+            Backpack.Callback -= OnBackpackSyncChanged;
+            Equipped.Callback -= OnEquippedSyncChanged;
         }
 
-        void OnSyncListChanged(SyncList<InvSlot>.Operation op, int index, InvSlot oldItem, InvSlot newItem)
-        {
-            OnClientInventoryChanged?.Invoke();
-        }
-        #endregion
-
-        #region Public (server) API
-        /// <summary>Server: add amount of itemId to Backpack. Returns leftover if not all fit.</summary>
+        // ---------- Capacity / init ----------
         [Server]
-        public ushort ServerAddItem(int itemId, ushort amount)
+        public void EnsureCapacities()
         {
-            var def = Lookup(itemId);
-            if (def == null || amount == 0) return amount;
+            // Backpack
+            while (Backpack.Count < backpackCapacity) Backpack.Add(default);
+            while (Backpack.Count > backpackCapacity) Backpack.RemoveAt(Backpack.Count - 1);
 
-            // 1) Fill existing stacks
-            if (GetMaxStack(def) > 1)
-            {
-                for (int i = 0; i < Backpack.Count && amount > 0; i++)
-                {
-                    var s = Backpack[i];
-                    if (!s.IsEmpty && s.itemId == itemId)
-                    {
-                        int canTake = Mathf.Min(GetMaxStack(def) - s.count, amount);
-                        if (canTake > 0)
-                        {
-                            s.count += (ushort)canTake;
-                            Backpack[i] = s;
-                            amount -= (ushort)canTake;
-                        }
-                    }
-                }
-            }
+            // Equipped mirrors inspector-driven EquipCount
+            int desired = EquipCount;
+            while (Equipped.Count < desired) Equipped.Add(default);
+            while (Equipped.Count > desired) Equipped.RemoveAt(Equipped.Count - 1);
+        }
 
-            // 2) Fill empty slots
-            for (int i = 0; i < Backpack.Count && amount > 0; i++)
+        // ---------- Callbacks (client) ----------
+        void OnBackpackSyncChanged(SyncList<InvSlot>.Operation op, int index, InvSlot oldItem, InvSlot newItem)
+        {
+            OnBackpackChanged?.Invoke();
+            OnClientInventoryChanged?.Invoke();
+        }
+
+        void OnEquippedSyncChanged(SyncList<InvSlot>.Operation op, int index, InvSlot oldItem, InvSlot newItem)
+        {
+            OnEquippedChanged?.Invoke();
+            OnClientInventoryChanged?.Invoke();
+        }
+
+        // =====================================================================
+        //                            Public API (Server)
+        // =====================================================================
+
+        [Server] public int ServerAdd(string itemId, int amount) => ServerAdd(ResolveDef(itemId), amount);
+
+        [Server]
+        public int ServerAdd(ItemDef def, int amount)
+        {
+            if (def == null || amount <= 0) return 0;
+            EnsureCapacities();
+
+            int remaining = amount;
+
+            // 1) fill partial stacks
+            for (int i = 0; i < Backpack.Count && remaining > 0; i++)
             {
                 var s = Backpack[i];
-                if (s.IsEmpty)
+                if (!IsSameItem(s, def)) continue;
+
+                int max = Math.Max(1, def.maxStack);
+                int cur = GetAmount(s);
+                if (cur >= max) continue;
+
+                int can = Math.Min(remaining, max - cur);
+                s = WithAmount(s, cur + can);
+                Backpack[i] = s;
+                remaining -= can;
+            }
+
+            // 2) fill empty slots
+            for (int i = 0; i < Backpack.Count && remaining > 0; i++)
+            {
+                var s = Backpack[i];
+                if (!IsEmpty(s)) continue;
+
+                int max = Math.Max(1, def.maxStack);
+                int put = Math.Min(remaining, max);
+                s = WithItemId(default, def.itemId);
+                s = WithAmount(s, put);
+                Backpack[i] = s;
+                remaining -= put;
+            }
+
+            return amount - remaining;
+        }
+
+        [Server]
+        public int ServerRemove(string itemId, int amount)
+        {
+            if (string.IsNullOrWhiteSpace(itemId) || amount <= 0) return 0;
+
+            int left = amount;
+            for (int i = 0; i < Backpack.Count && left > 0; i++)
+            {
+                var s = Backpack[i];
+                if (!IsSameItem(s, itemId)) continue;
+
+                int cur = GetAmount(s);
+                int take = Math.Min(left, cur);
+                int newA = cur - take;
+
+                s = (newA > 0) ? WithAmount(s, newA) : default;
+                Backpack[i] = s;
+                left -= take;
+            }
+            return amount - left;
+        }
+
+        [Server]
+        public bool ServerSwapBackpack(int a, int b)
+        {
+            if (!InBackpack(a) || !InBackpack(b) || a == b) return false;
+            var tmp = Backpack[a];
+            Backpack[a] = Backpack[b];
+            Backpack[b] = tmp;
+            return true;
+        }
+
+        [Server]
+        public bool ServerMoveOrMerge(int fromIndex, int toIndex)
+        {
+            if (!InBackpack(fromIndex) || !InBackpack(toIndex) || fromIndex == toIndex) return false;
+            var from = Backpack[fromIndex];
+            var to = Backpack[toIndex];
+
+            if (IsEmpty(from)) return false;
+
+            // merge if same item and room
+            if (!IsEmpty(to) && GetItemId(from).Equals(GetItemId(to), StringComparison.OrdinalIgnoreCase))
+            {
+                var def = ResolveDef(GetItemId(from));
+                int max = Math.Max(1, def ? def.maxStack : 1);
+
+                int ca = GetAmount(from);
+                int cb = GetAmount(to);
+                int can = Math.Min(ca, Math.Max(0, max - cb));
+                if (can > 0)
                 {
-                    int put = Mathf.Min(GetMaxStack(def), amount);
-                    s.itemId = itemId;
-                    s.count = (ushort)put;
-                    Backpack[i] = s;
-                    amount -= (ushort)put;
+                    to = WithAmount(to, cb + can);
+                    ca -= can;
+                    from = (ca > 0) ? WithAmount(from, ca) : default;
+
+                    Backpack[toIndex] = to;
+                    Backpack[fromIndex] = from;
+                    return true;
                 }
             }
 
-            return amount; // >0 means inventory full
-        }
-        #endregion
-
-        #region Client->Server commands
-        /// <summary>Move/split/swap/equip/unequip. amount=0 => all.</summary>
-        [Command]
-        public void CmdMove(ContainerKind srcKind, int srcIndex, ContainerKind dstKind, int dstIndex, ushort amount)
-        {
-            if (!isServer) return;
-            if (!ServerTryMove(srcKind, srcIndex, dstKind, dstIndex, amount))
-                TargetNotifyMoveFailed(connectionToClient);
+            // else swap
+            Backpack[toIndex] = from;
+            Backpack[fromIndex] = to;
+            return true;
         }
 
-        [TargetRpc]
-        void TargetNotifyMoveFailed(NetworkConnectionToClient conn)
-        {
-            // Optional: show a small toast on client
-        }
-        #endregion
-
-        #region Server move logic
         [Server]
-        bool ServerTryMove(ContainerKind srcKind, int srcIndex, ContainerKind dstKind, int dstIndex, ushort amount)
+        public bool ServerEquipFromBackpack(int backpackIndex, int equipIndex, out string reason)
         {
-            var src = GetList(srcKind);
-            var dst = GetList(dstKind);
-            if (src == null || dst == null) return false;
-            if (!InRange(src, srcIndex) || !InRange(dst, dstIndex)) return false;
+            reason = null;
+            if (!InBackpack(backpackIndex) || !InEquip(equipIndex)) { reason = "Index out of range"; return false; }
 
-            var s = src[srcIndex];
-            if (s.IsEmpty) return false;
+            var from = Backpack[backpackIndex];
+            if (IsEmpty(from)) { reason = "No item"; return false; }
 
-            var item = Lookup(s.itemId);
-            if (item == null) return false;
+            var def = ResolveDef(GetItemId(from));
+            var slotKind = IndexToSlot(equipIndex);
+            if (!CanEquipAt(def, slotKind)) { reason = "Not compatible with slot"; return false; }
 
-            if (amount == 0 || amount > s.count) amount = s.count;
+            var eqNew = WithItemId(default, def.itemId);
+            eqNew = WithAmount(eqNew, 1);
 
-            var d = dst[dstIndex];
+            var eqOld = Equipped[equipIndex];
+            Equipped[equipIndex] = eqNew;
 
-            // ---- EQUIPMENT ----
-            if (dstKind == ContainerKind.Equipment)
+            int left = GetAmount(from) - 1;
+            from = (left > 0) ? WithAmount(from, left) : default;
+            Backpack[backpackIndex] = from;
+
+            if (!IsEmpty(eqOld))
+                ServerAdd(GetItemId(eqOld), GetAmount(eqOld));
+
+            return true;
+        }
+
+        [Server]
+        public bool ServerUnequipToBackpack(int equipIndex)
+        {
+            if (!InEquip(equipIndex)) return false;
+            var eq = Equipped[equipIndex];
+            if (IsEmpty(eq)) return false;
+
+            int added = ServerAdd(GetItemId(eq), GetAmount(eq));
+            if (added <= 0) return false;
+
+            Equipped[equipIndex] = default;
+            return true;
+        }
+
+        [Server]
+        public bool ServerAutoEquipFromBackpack(int backpackIndex, out string reason)
+        {
+            reason = null;
+            if (!InBackpack(backpackIndex)) { reason = "Index out of range"; return false; }
+            var from = Backpack[backpackIndex];
+            if (IsEmpty(from)) { reason = "No item"; return false; }
+
+            var def = ResolveDef(GetItemId(from));
+            if (def == null || !def.IsEquipment) { reason = "Not equipment"; return false; }
+
+            for (int i = 0; i < EquipCount; i++)
             {
-                if (amount > 1) amount = 1;
-                if (!CanEquip(item, dstIndex)) return false;
+                var slotKind = IndexToSlot(i);
+                if ((def.equipSlots & slotKind) == 0) continue;
+                if (ServerEquipFromBackpack(backpackIndex, i, out reason)) return true;
+            }
+            reason = "No compatible slot";
+            return false;
+        }
 
-                int numericId;
-                if (!TryGetNumericItemId(item, out numericId)) return false;
+        // ---------- Client Commands (UI) ----------
+        [Command] public void CmdSwapBackpack(int a, int b) => ServerSwapBackpack(a, b);
+        [Command] public void CmdMoveOrMerge(int from, int to) => ServerMoveOrMerge(from, to);
+        [Command] public void CmdEquipFromBackpack(int bagIndex, int equipIndex) { ServerEquipFromBackpack(bagIndex, equipIndex, out _); }
+        [Command] public void CmdUnequipToBackpack(int equipIndex) { ServerUnequipToBackpack(equipIndex); }
+        [Command] public void CmdAutoEquipFromBackpack(int bagIndex) { ServerAutoEquipFromBackpack(bagIndex, out _); }
 
-                if (d.IsEmpty)
+        // ---- Back-compat command overloads used by older UIs ----
+        [Command] public void CmdMove(int from, int to) => ServerMoveOrMerge(from, to);
+        [Command] public void CmdMove(int from, int to, bool split, int amount, bool allowSwap) => ServerMoveCompat(from, to, split, amount, allowSwap);
+        [Command] public void CmdMove(int from, int to, bool split) => ServerMoveCompat(from, to, split, split ? 1 : 0, true);
+        [Command] public void CmdMove(int from, int to, int amount) => ServerMoveCompat(from, to, true, Math.Max(1, amount), true);
+        [Command] public void CmdMove(int from, int to, bool split, int amount) => ServerMoveCompat(from, to, split, Math.Max(1, amount), true);
+        [Command] public void CmdMove(int from, int to, int amount, bool allowSwap) => ServerMoveCompat(from, to, true, Math.Max(1, amount), allowSwap);
+        //[Command] public void CmdMove(int from, int to, bool allowSwap) => ServerMoveCompat(from, to, false, 0, allowSwap);
+
+        [Server]
+        void ServerMoveCompat(int from, int to, bool split, int amount, bool allowSwap)
+        {
+            if (!InBackpack(from) || !InBackpack(to) || from == to) return;
+
+            var src = Backpack[from];
+            var dst = Backpack[to];
+            if (IsEmpty(src)) return;
+
+            if (split && amount > 0)
+            {
+                int moving = Math.Min(amount, GetAmount(src));
+
+                if (IsEmpty(dst))
                 {
-                    // move 1 into equipment
-                    s.count -= 1;
-                    if (s.count == 0) s.Clear();
-                    d.itemId = numericId; // write numeric id to slot
-                    d.count = 1;
-                    src[srcIndex] = s;
-                    dst[dstIndex] = d;
-                    return true;
+                    dst = WithItemId(default, GetItemId(src));
+                    dst = WithAmount(dst, moving);
+                    Backpack[to] = dst;
+
+                    int remain = GetAmount(src) - moving;
+                    src = (remain > 0) ? WithAmount(src, remain) : default;
+                    Backpack[from] = src;
+                    return;
                 }
-                else
+
+                if (GetItemId(dst).Equals(GetItemId(src), StringComparison.OrdinalIgnoreCase))
                 {
-                    // swap equip <-> src
-                    if (d.count != 1) return false;
-
-                    var dstItem = Lookup(d.itemId);
-                    if (dstItem == null) return false;
-                    if (!CanEquip(item, dstIndex)) return false;
-
-                    if (srcKind == ContainerKind.Equipment)
+                    var def = ResolveDef(GetItemId(src));
+                    int max = Math.Max(1, def ? def.maxStack : 1);
+                    int can = Math.Min(moving, Math.Max(0, max - GetAmount(dst)));
+                    if (can > 0)
                     {
-                        if (!CanEquip(dstItem, srcIndex)) return false;
+                        dst = WithAmount(dst, GetAmount(dst) + can);
+                        Backpack[to] = dst;
+
+                        src = WithAmount(src, GetAmount(src) - can);
+                        if (GetAmount(src) <= 0) src = default;
+                        Backpack[from] = src;
                     }
+                    return;
+                }
 
-                    var tmp = d;
-                    d = new InvSlot { itemId = s.itemId, count = 1 };
+                if (allowSwap && moving == GetAmount(src))
+                {
+                    Backpack[to] = src;
+                    Backpack[from] = dst;
+                }
+                return;
+            }
 
-                    s.count -= 1;
-                    if (s.count == 0) s.Clear();
+            ServerMoveOrMerge(from, to);
+        }
 
-                    if (srcKind == ContainerKind.Equipment)
+        [Command] public void CmdEquip(int bagIndex, int equipIndex) { ServerEquipFromBackpack(bagIndex, equipIndex, out _); }
+        [Command] public void CmdUnequip(int equipIndex) { ServerUnequipToBackpack(equipIndex); }
+
+        // seeders / older scripts (id variants)
+        [Server] public int ServerAddItem(string itemId, int amount) => ServerAdd(itemId, amount);
+        [Server] public int ServerAddItem(ItemDef def, int amount) => ServerAdd(def, amount);
+        [Server] public int ServerAddItem(int legacyNumericId, int amount) => ServerAdd(legacyNumericId.ToString(), amount);
+        [Server] public int ServerAdd(int legacyNumericId, int amount) => ServerAdd(legacyNumericId.ToString(), amount);
+        [Server] public int ServerRemove(int legacyNumericId, int amount) => ServerRemove(legacyNumericId.ToString(), amount);
+
+        // ---------- Helpers ----------
+        bool InBackpack(int i) => i >= 0 && i < Backpack.Count;
+        bool InEquip(int i) => i >= 0 && i < Equipped.Count;
+
+        bool CanEquipAt(ItemDef def, EquipSlotAlias slot)
+        {
+            if (def == null || !def.IsEquipment) return false;
+            return (def.equipSlots & slot) != 0;
+        }
+
+        ItemDef ResolveDef(string itemId)
+        {
+            if (string.IsNullOrWhiteSpace(itemId)) return null;
+
+            // 1) Try given lookup component (reflection)
+            if (itemLookup != null)
+            {
+                var t = itemLookup.GetType();
+
+                var mTry = t.GetMethod("TryGetById", new[] { typeof(string), typeof(ItemDef).MakeByRefType() });
+                if (mTry != null)
+                {
+                    object[] args = new object[] { itemId, null };
+                    bool ok = (bool)mTry.Invoke(itemLookup, args);
+                    if (ok) return (ItemDef)args[1];
+                }
+
+                var mGet = t.GetMethod("GetByIdOrNull", new[] { typeof(string) });
+                if (mGet != null)
+                {
+                    var res = mGet.Invoke(itemLookup, new object[] { itemId }) as ItemDef;
+                    if (res != null) return res;
+                }
+            }
+
+            // 2) Resources fallback
+            var direct = Resources.Load<ItemDef>($"Items/{itemId}");
+            if (direct) return direct;
+
+            var all = Resources.LoadAll<ItemDef>("Items");
+            return all.FirstOrDefault(d => d && string.Equals(d.itemId, itemId, StringComparison.OrdinalIgnoreCase));
+        }
+
+        // ----- Slot accessors (simple & safe: Convert for get) -----
+        static class Slot
+        {
+            static readonly FieldInfo fId, fAmt;
+            static readonly PropertyInfo pId, pAmt;
+
+            static Slot()
+            {
+                var t = typeof(InvSlot);
+                const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+                fId = t.GetField("itemId", BF) ?? t.GetField("ItemId", BF) ?? t.GetField("id", BF) ?? t.GetField("Id", BF) ?? t.GetField("itemID", BF) ?? t.GetField("ItemID", BF);
+                pId = t.GetProperty("itemId", BF) ?? t.GetProperty("ItemId", BF) ?? t.GetProperty("id", BF) ?? t.GetProperty("Id", BF) ?? t.GetProperty("itemID", BF) ?? t.GetProperty("ItemID", BF);
+
+                fAmt = t.GetField("amount", BF) ?? t.GetField("Amount", BF) ?? t.GetField("count", BF) ?? t.GetField("Count", BF) ?? t.GetField("stack", BF) ?? t.GetField("Stack", BF) ?? t.GetField("quantity", BF) ?? t.GetField("Quantity", BF);
+                pAmt = t.GetProperty("amount", BF) ?? t.GetProperty("Amount", BF) ?? t.GetProperty("count", BF) ?? t.GetProperty("Count", BF) ?? t.GetProperty("stack", BF) ?? t.GetProperty("Stack", BF) ?? t.GetProperty("quantity", BF) ?? t.GetProperty("Quantity", BF);
+            }
+
+            public static string GetId(InvSlot s)
+            {
+                if (fId != null) { var v = fId.GetValue(s); return v != null ? Convert.ToString(v) : null; }
+                if (pId != null) { var v = pId.GetValue(s); return v != null ? Convert.ToString(v) : null; }
+                return null;
+            }
+
+            public static int GetAmt(InvSlot s)
+            {
+                if (fAmt != null) { var v = fAmt.GetValue(s); return v != null ? Convert.ToInt32(v) : 0; }
+                if (pAmt != null) { var v = pAmt.GetValue(s); return v != null ? Convert.ToInt32(v) : 0; }
+                return 0;
+            }
+
+            public static InvSlot WithId(InvSlot s, string id)
+            {
+                object box = s;
+                try
+                {
+                    if (fId != null)
                     {
-                        src[srcIndex] = tmp;
+                        var t = fId.FieldType;
+                        object val = t == typeof(string) ? (object)id : Convert.ChangeType(id, t);
+                        fId.SetValue(box, val);
                     }
-                    else
+                    else if (pId != null && pId.CanWrite)
                     {
-                        if (src[srcIndex].IsEmpty)
-                        {
-                            src[srcIndex] = tmp;
-                        }
-                        else
-                        {
-                            var ss = src[srcIndex];
-                            var tDef = Lookup(tmp.itemId);
-                            if (!ss.IsEmpty && ss.itemId == tmp.itemId && tDef != null && GetMaxStack(tDef) > ss.count)
-                            {
-                                int can = Mathf.Min(GetMaxStack(tDef) - ss.count, tmp.count);
-                                if (can > 0)
-                                {
-                                    ss.count += (ushort)can;
-                                    src[srcIndex] = ss;
-                                    tmp.count -= (ushort)can;
-                                }
-                            }
-                            if (tmp.count > 0)
-                            {
-                                ushort leftover = ServerAddItem(tmp.itemId, tmp.count);
-                                if (leftover > 0) return false;
-                            }
-                        }
+                        var t = pId.PropertyType;
+                        object val = t == typeof(string) ? (object)id : Convert.ChangeType(id, t);
+                        pId.SetValue(box, val);
                     }
-
-                    dst[dstIndex] = d;
-                    return true;
                 }
+                catch { /* ignore */ }
+                return (InvSlot)box;
             }
 
-            // ---- BACKPACK ----
-            if (dstKind == ContainerKind.Backpack)
+            public static InvSlot WithAmt(InvSlot s, int amt)
             {
-                if (d.IsEmpty)
+                object box = s;
+                try
                 {
-                    d.itemId = s.itemId;
-                    d.count = amount;
-                    s.count -= amount;
-                    if (s.count == 0) s.Clear();
-                    src[srcIndex] = s;
-                    dst[dstIndex] = d;
-                    return true;
+                    if (fAmt != null)
+                    {
+                        var t = fAmt.FieldType;
+                        object val = t == typeof(int) ? (object)amt : Convert.ChangeType(amt, t);
+                        fAmt.SetValue(box, val);
+                    }
+                    else if (pAmt != null && pAmt.CanWrite)
+                    {
+                        var t = pAmt.PropertyType;
+                        object val = t == typeof(int) ? (object)amt : Convert.ChangeType(amt, t);
+                        pAmt.SetValue(box, val);
+                    }
                 }
-
-                if (d.itemId == s.itemId)
-                {
-                    if (GetMaxStack(item) <= 1) return false;
-                    int canTake = Mathf.Min(GetMaxStack(item) - d.count, amount);
-                    if (canTake == 0) return false;
-                    d.count += (ushort)canTake;
-                    s.count -= (ushort)canTake;
-                    if (s.count == 0) s.Clear();
-                    src[srcIndex] = s;
-                    dst[dstIndex] = d;
-                    return true;
-                }
-                else
-                {
-                    var tmp = d;
-                    d = s;
-                    src[srcIndex] = tmp;
-                    dst[dstIndex] = d;
-                    return true;
-                }
+                catch { /* ignore */ }
+                return (InvSlot)box;
             }
 
-            return false;
-        }
-        #endregion
-
-        #region Helpers (sizes, lookup, equip, parsing)
-        [Server]
-        void ServerEnsureSize(SyncList<InvSlot> list, int size)
-        {
-            int cap = (list == Backpack) ? MAX_BACKPACK_SLOTS : MAX_EQUIP_SLOTS;
-            size = Mathf.Clamp(size, 1, cap);
-
-            for (int i = list.Count; i < size; i++) list.Add(default(InvSlot));
-            for (int i = list.Count - 1; i >= size; i--) list.RemoveAt(i);
-        }
-
-        SyncList<InvSlot> GetList(ContainerKind kind)
-        {
-            if (kind == ContainerKind.Backpack) return Backpack;
-            if (kind == ContainerKind.Equipment) return Equipment;
-            return null;
-        }
-
-        static bool InRange(SyncList<InvSlot> list, int index) => index >= 0 && index < list.Count;
-
-        ItemDef Lookup(int id)
-        {
-            if (itemLookup == null)
-                itemLookup = ResourcesItemLookup.Instance;
-            return (itemLookup != null) ? itemLookup.GetById(id) : null;
-        }
-
-        // Max stack via reflection-friendly fallback (supports maxStack or stackSize etc.)
-        int GetMaxStack(ItemDef def)
-        {
-            if (def == null) return 1;
-
-            // Try common names
-            object val = GetMemberValue(def, new[] { "maxStack", "stackSize", "stackLimit", "stackCap" });
-            if (val is int i) return Mathf.Max(1, i);
-            if (val is string s && int.TryParse(s, out var parsed)) return Mathf.Max(1, parsed);
-
-            // Default to 1
-            return 1;
-        }
-
-        // Equip permission (works with various schemas)
-        bool CanEquip(ItemDef item, int equipmentIndex)
-        {
-            EquipSlot target;
-            switch (equipmentIndex)
+            public static bool IsEmpty(InvSlot s)
             {
-                case 0: target = EquipSlot.Head; break;
-                case 1: target = EquipSlot.Chest; break;
-                case 2: target = EquipSlot.Legs; break;
-                case 3: target = EquipSlot.MainHand; break;
-                case 4: target = EquipSlot.OffHand; break;
-                case 5: target = EquipSlot.Accessory; break;
-                case 6: target = EquipSlot.Accessory; break;
-                case 7: target = EquipSlot.Accessory; break;
-                default: target = EquipSlot.None; break;
+                var id = GetId(s);
+                var a = GetAmt(s);
+                return string.IsNullOrEmpty(id) || a <= 0;
             }
-
-            if (!TryGetEquipMask(item, out var mask))
-                return false;
-
-            return (mask & target) != 0;
         }
 
-        // Attempts to extract an EquipSlot mask from your ItemDef via common member names/types.
-        static bool TryGetEquipMask(ItemDef item, out EquipSlot mask)
-        {
-            mask = EquipSlot.None;
-            if (item == null) return false;
-
-            string[] names =
-            {
-                "equipSlotsMask", "equipMask", "allowedSlots", "allowedEquipSlots",
-                "slotMask", "equipSlot", "slot", "equipmentSlot", "equipmentSlots"
-            };
-
-            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            var t = item.GetType();
-
-            foreach (var name in names)
-            {
-                var f = t.GetField(name, flags);
-                if (f != null && TryConvertEquipMask(f.GetValue(item), out mask)) return true;
-
-                var p = t.GetProperty(name, flags);
-                if (p != null && p.CanRead && TryConvertEquipMask(p.GetValue(item, null), out mask)) return true;
-            }
-
-            return false;
-        }
-
-        static bool TryConvertEquipMask(object value, out EquipSlot mask)
-        {
-            mask = EquipSlot.None;
-            if (value == null) return false;
-
-            if (value is int i) { mask = (EquipSlot)i; return true; }
-            if (value is uint ui) { mask = (EquipSlot)(int)ui; return true; }
-            if (value is short s) { mask = (EquipSlot)s; return true; }
-            if (value is ushort us) { mask = (EquipSlot)us; return true; }
-            if (value is byte b) { mask = (EquipSlot)b; return true; }
-
-            var type = value.GetType();
-            if (type.IsEnum)
-            {
-                try { mask = (EquipSlot)Convert.ChangeType(value, typeof(int)); return true; }
-                catch { return TryParseEquipSlotString(value.ToString(), out mask); }
-            }
-
-            if (value is string str) return TryParseEquipSlotString(str, out mask);
-
-            return false;
-        }
-
-        static bool TryParseEquipSlotString(string s, out EquipSlot mask)
-        {
-            mask = EquipSlot.None;
-            if (string.IsNullOrWhiteSpace(s)) return false;
-
-            var parts = s.Split(new[] { '|', ',', '+', ';' }, StringSplitOptions.RemoveEmptyEntries);
-            EquipSlot m = EquipSlot.None;
-            foreach (var raw in parts)
-            {
-                var part = raw.Trim();
-                if (Enum.TryParse(part, true, out EquipSlot flag))
-                    m |= flag;
-            }
-            mask = m;
-            return m != EquipSlot.None;
-        }
-
-        /// <summary>Parse ItemDef.itemId (int or string) → int.</summary>
-        static bool TryGetNumericItemId(ItemDef def, out int numericId)
-        {
-            numericId = 0;
-            if (def == null) return false;
-
-            var t = def.GetType();
-            // field "itemId" or "id"
-            var f = t.GetField("itemId", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                 ?? t.GetField("id", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (f != null)
-            {
-                object v = f.GetValue(def);
-                if (v is int i) { numericId = i; return true; }
-                if (v is string s && int.TryParse(s, out numericId)) return true;
-            }
-
-            // property "itemId" or "id"
-            var p = t.GetProperty("itemId", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                 ?? t.GetProperty("id", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            if (p != null)
-            {
-                object v = p.GetValue(def, null);
-                if (v is int i) { numericId = i; return true; }
-                if (v is string s && int.TryParse(s, out numericId)) return true;
-            }
-
-            return false;
-        }
-
-        // Reflection: try a list of possible member names
-        static object GetMemberValue(object obj, string[] names)
-        {
-            if (obj == null || names == null) return null;
-            var t = obj.GetType();
-            const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-
-            foreach (var name in names)
-            {
-                var f = t.GetField(name, flags);
-                if (f != null) return f.GetValue(obj);
-
-                var p = t.GetProperty(name, flags);
-                if (p != null && p.CanRead) return p.GetValue(obj, null);
-            }
-            return null;
-        }
-        #endregion
-
-        #region Persistence
-        [Serializable]
-        public class InventorySave
-        {
-            public InvSlot[] backpack;
-            public InvSlot[] equipment;
-        }
-
-        [Server]
-        public InventorySave CaptureState()
-        {
-            var bp = new InvSlot[Backpack.Count];
-            for (int i = 0; i < Backpack.Count; i++) bp[i] = Backpack[i];
-
-            var eq = new InvSlot[Equipment.Count];
-            for (int i = 0; i < Equipment.Count; i++) eq[i] = Equipment[i];
-
-            return new InventorySave { backpack = bp, equipment = eq };
-        }
-
-        [Server]
-        public void RestoreState(InventorySave save)
-        {
-            if (save == null) return;
-
-            Backpack.Clear();
-            Equipment.Clear();
-
-            if (save.backpack != null)
-                for (int i = 0; i < save.backpack.Length; i++)
-                    Backpack.Add(save.backpack[i]);
-
-            if (save.equipment != null)
-                for (int i = 0; i < save.equipment.Length; i++)
-                    Equipment.Add(save.equipment[i]);
-        }
-        #endregion
+        // Shorthands
+        static bool IsEmpty(InvSlot s) => Slot.IsEmpty(s);
+        static string GetItemId(InvSlot s) => Slot.GetId(s);
+        static int GetAmount(InvSlot s) => Slot.GetAmt(s);
+        static InvSlot WithItemId(InvSlot s, string id) => Slot.WithId(s, id);
+        static InvSlot WithAmount(InvSlot s, int a) => Slot.WithAmt(s, a);
+        static bool IsSameItem(InvSlot s, ItemDef d) => !IsEmpty(s) && d != null && string.Equals(GetItemId(s), d.itemId, StringComparison.OrdinalIgnoreCase);
+        static bool IsSameItem(InvSlot s, string id) => !IsEmpty(s) && string.Equals(GetItemId(s), id, StringComparison.OrdinalIgnoreCase);
     }
 }

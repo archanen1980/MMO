@@ -10,11 +10,14 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 680d9df6d037e2643a3b246621332d67, type: 3}
-  m_Name: Gold
+  m_Name: new_equipment 1
   m_EditorClassIdentifier: 
   itemId: 2
-  displayName: Gold
-  maxStack: 99
+  displayName: Wooden Shield
   icon: {fileID: 21300000, guid: 2d3836f08dc9bcb47ac3b3d8d353151f, type: 3}
   description: 
+  maxStack: 1
   weight: 0
+  kind: 1
+  isCraftable: 1
+  equipSlots: 64

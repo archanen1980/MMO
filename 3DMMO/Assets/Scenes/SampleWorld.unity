@@ -1391,11 +1391,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b760915a2b351954baa2a51b4d1ef394, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  backpackGrid: {fileID: 26009464}
+  player: {fileID: 0}
   equipmentGrid: {fileID: 751863480}
+  backpackGrid: {fileID: 26009464}
   slotPrefab: {fileID: 4064323966012089168, guid: 0144f0b857387ac4bb287adce7ef98d5, type: 3}
-  canvas: {fileID: 496073740}
-  dragGhost: {fileID: 1512343537}
+  title: {fileID: 0}
 --- !u!1001 &666563745
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -35230,7 +35230,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1512343537
 MonoBehaviour:
   m_ObjectHideFlags: 0

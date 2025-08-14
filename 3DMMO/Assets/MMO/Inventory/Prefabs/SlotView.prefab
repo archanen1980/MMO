@@ -17,7 +17,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!224 &7101936725656324963
 RectTransform:
   m_ObjectHideFlags: 0
@@ -272,7 +272,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   icon: {fileID: 5489347011213204195}
-  countText: {fileID: 155034624247875807}
+  countLabel: {fileID: 0}
+  selectionHighlight: {fileID: 0}
 --- !u!1 &5048873724170741815
 GameObject:
   m_ObjectHideFlags: 0

@@ -35,7 +35,7 @@ public class ItemDefBrowserWindow : EditorWindow
     private readonly HashSet<int> _dupes = new HashSet<int>();
 
     // --- Menu entries: quick + Add Tab ---
-    [MenuItem("MMO/Item Browser")]
+    [MenuItem("Tools/MMO Starter/Item Browser")]
     [MenuItem("Window/MMO/Item Browser")]
     public static void Open()
     {
