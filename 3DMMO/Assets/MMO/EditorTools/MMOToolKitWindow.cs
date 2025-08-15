@@ -200,8 +200,7 @@ namespace MMO.EditorTools
                 GUILayout.FlexibleSpace();
                 EditorGUILayout.Space(4);
 
-                var bg = GUI.backgroundColor;
-                GUI.backgroundColor = new Color(0.25f, 0.6f, 0.95f, 1f);
+                // --- Single persistent Modules button in the original spot ---
                 if (GUILayout.Button(new GUIContent("  Modules", EditorGUIUtility.IconContent("d_UnityEditor.InspectorWindow").image),
                                      new GUIStyle(EditorStyles.miniButtonLeft)
                                      { fixedHeight = 30, alignment = TextAnchor.MiddleLeft, fontStyle = FontStyle.Bold }))
@@ -209,7 +208,6 @@ namespace MMO.EditorTools
                     _showModuleManager = true;
                     _activeModule = null;
                 }
-                GUI.backgroundColor = bg;
             }
         }
 
@@ -231,7 +229,20 @@ namespace MMO.EditorTools
                     return;
                 }
 
-                _activeModule.OnGUI();
+                // Protect host GUI state from module side-effects
+                var prevEnabled = GUI.enabled;
+                var prevColor = GUI.color;
+                var prevMatrix = GUI.matrix;
+                try
+                {
+                    _activeModule.OnGUI();
+                }
+                finally
+                {
+                    GUI.enabled = prevEnabled;
+                    GUI.color = prevColor;
+                    GUI.matrix = prevMatrix;
+                }
             }
         }
 

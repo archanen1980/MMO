@@ -56,8 +56,8 @@ namespace MMO.Inventory
         {
             if (player == null || _subscribed) return;
             player.OnClientInventoryChanged += RebuildUI;
-            player.OnBackpackChanged += RebuildUI;
-            player.OnEquippedChanged += RebuildUI;
+            player.OnBackpackChanged        += RebuildUI;
+            player.OnEquippedChanged        += RebuildUI;
             _subscribed = true;
         }
 
@@ -65,8 +65,8 @@ namespace MMO.Inventory
         {
             if (player == null || !_subscribed) return;
             player.OnClientInventoryChanged -= RebuildUI;
-            player.OnBackpackChanged -= RebuildUI;
-            player.OnEquippedChanged -= RebuildUI;
+            player.OnBackpackChanged        -= RebuildUI;
+            player.OnEquippedChanged        -= RebuildUI;
             _subscribed = false;
         }
 
@@ -87,7 +87,7 @@ namespace MMO.Inventory
                 BindSlot(view, InventorySlotView.Area.Equipment, i, GetSlot(player.Equipped, i));
             }
 
-            // backpack
+            // backpacka
             for (int i = 0; i < player.Backpack.Count; i++)
             {
                 var view = backpackGrid.GetChild(i).GetComponent<InventorySlotView>();
@@ -108,7 +108,7 @@ namespace MMO.Inventory
             if (view == null) return;
 
             string itemId = SlotAccess.GetId(slotBoxed);
-            int amount = SlotAccess.GetAmt(slotBoxed);
+            int amount    = SlotAccess.GetAmt(slotBoxed);
 
             var def = ResolveDef(itemId);
 

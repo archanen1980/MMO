@@ -1,40 +1,56 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using TMPro;
-using MMO.Shared.Item;
+using MMO.Shared.Item;   // ItemDef
+using MMO.Inventory;     // namespace alignment
 
 namespace MMO.Inventory
 {
     /// <summary>
-    /// Single slot widget. Handles visuals, clicks, and basic drag between slots.
-    /// Works for Backpack and Equipment grids.
+    /// Single slot widget for Backpack & Equipment.
+    /// - Visuals: icon + stack count (+ optional empty overlay/highlight)
+    /// - Click: Backpack → auto-equip if possible, Equipment → unequip
+    /// - Drag: Backpack→Backpack move/merge; Backpack→Equipment equip; Equipment→Backpack unequip
+    /// - Tooltip: cursor-follow via ItemTooltipCursor (Icon, Name, Description)
     /// </summary>
     public class InventorySlotView : MonoBehaviour,
-        IPointerClickHandler, IBeginDragHandler, IDragHandler, IEndDragHandler
+        IPointerClickHandler, IBeginDragHandler, IDragHandler, IEndDragHandler,
+        IPointerEnterHandler, IPointerExitHandler
     {
-        public enum Area { Backpack, Equipment }
+        // Kept for InventoryUI compatibility
+        public enum Area { None = 0, Backpack = 1, Equipment = 2 }
 
-        [Header("UI")]
+        [Header("Identity (set by InventoryUI.Bind)")]
+        [SerializeField] Area _area = Area.None;
+        [SerializeField] int _index = -1;
+
+        [Header("UI (optional)")]
         public Image icon;
         public TMP_Text countLabel;
+        public GameObject emptyOverlay;
         public Image selectionHighlight;
 
-        // bound data
+        // Bound state
         PlayerInventory _player;
-        Area _area;
-        int _index;
         string _itemId;
         int _amount;
-        Func<string, ItemDef> _resolveDef;
+        ItemDef _def;                         // store for tooltip
+        Func<string, ItemDef> _resolveDef;    // fallback resolver
 
-        // drag visuals (shared)
+        // Shared drag helpers
         static GameObject s_dragIcon;
         static RectTransform s_dragRT;
         static Canvas s_canvas;
+        static Camera s_uiCam;
         static InventorySlotView s_dragSource;
+        static readonly List<RaycastResult> s_raycast = new List<RaycastResult>(16);
 
+        // ---------------------------------------------------------------------
+        // Public API — called by InventoryUI
+        // ---------------------------------------------------------------------
         public void Bind(PlayerInventory player, Area area, int index,
                          string itemId, int amount, ItemDef def,
                          Func<string, ItemDef> defResolver)
@@ -44,9 +60,10 @@ namespace MMO.Inventory
             _index = index;
             _itemId = itemId;
             _amount = amount;
+            _def = def;
             _resolveDef = defResolver;
 
-            // visuals
+            // Visuals
             if (icon)
             {
                 var sprite = def ? def.icon : null;
@@ -57,60 +74,69 @@ namespace MMO.Inventory
 
             if (countLabel)
             {
-                if (amount > 1)
-                {
-                    countLabel.text = amount.ToString();
-                    countLabel.enabled = true;
-                }
-                else
-                {
-                    countLabel.text = "";
-                    countLabel.enabled = false;
-                }
+                if (amount > 1) { countLabel.text = amount.ToString(); countLabel.enabled = true; }
+                else { countLabel.text = string.Empty; countLabel.enabled = false; }
             }
 
+            if (emptyOverlay) emptyOverlay.SetActive(string.IsNullOrEmpty(itemId) || amount <= 0);
             if (selectionHighlight) selectionHighlight.enabled = false;
 
-            // tooltips etc. (optional)
-            // You can integrate your tooltip system here using def/displayName/description.
+            // Cache canvas for drag ghost
+            if (s_canvas == null)
+            {
+                s_canvas = GetComponentInParent<Canvas>();
+                if (s_canvas && s_canvas.renderMode != RenderMode.ScreenSpaceOverlay)
+                    s_uiCam = s_canvas.worldCamera;
+            }
         }
 
-        // ---------- Clicks ----------
+        public void Clear()
+        {
+            _itemId = null;
+            _amount = 0;
+            _def = null;
+
+            if (icon) { icon.sprite = null; icon.enabled = false; icon.color = new Color(1, 1, 1, 0.1f); }
+            if (countLabel) { countLabel.text = string.Empty; countLabel.enabled = false; }
+            if (emptyOverlay) emptyOverlay.SetActive(true);
+            if (selectionHighlight) selectionHighlight.enabled = false;
+        }
+
+        // ---------------------------------------------------------------------
+        // Click: quick equip/unequip
+        // ---------------------------------------------------------------------
         public void OnPointerClick(PointerEventData eventData)
         {
             if (_player == null) return;
+            if (eventData.button != PointerEventData.InputButton.Left) return;
 
-            // Left click behavior:
-            if (eventData.button == PointerEventData.InputButton.Left)
+            if (_area == Area.Backpack)
             {
-                if (_area == Area.Backpack)
-                {
-                    // Auto-equip if equipment; otherwise no-op
-                    _player.CmdAutoEquipFromBackpack(_index);
-                }
-                else // Equipment
-                {
-                    // Unequip back to backpack
-                    _player.CmdUnequip(_index);
-                }
+                // Auto-equip if it’s equippable; server validates kind/slot
+                _player.CmdAutoEquipFromBackpack(_index);
             }
-
-            // Right-click could open context (split/drop); implement as needed.
+            else if (_area == Area.Equipment)
+            {
+                // Unequip to backpack (server finds destination)
+                _player.CmdUnequip(_index);
+            }
         }
 
-        // ---------- Drag & Drop ----------
+        // ---------------------------------------------------------------------
+        // Drag: move/equip/unequip
+        // ---------------------------------------------------------------------
         public void OnBeginDrag(PointerEventData eventData)
         {
             if (_player == null) return;
-            if (_area == Area.Equipment && string.IsNullOrEmpty(_itemId))
-                return; // nothing to drag
-            if (_area == Area.Backpack && string.IsNullOrEmpty(_itemId))
-                return;
+            if (string.IsNullOrEmpty(_itemId) || _amount <= 0) return;
 
             s_dragSource = this;
             CreateDragIcon();
             UpdateDragIcon(eventData);
             if (selectionHighlight) selectionHighlight.enabled = true;
+
+            // hide tooltip while dragging
+            UI.ItemTooltipCursor.Instance?.Hide();
         }
 
         public void OnDrag(PointerEventData eventData)
@@ -124,10 +150,8 @@ namespace MMO.Inventory
             if (selectionHighlight) selectionHighlight.enabled = false;
 
             var target = RaycastForSlot(eventData);
-            if (target != null && target._player == _player)
-            {
+            if (target != null)
                 HandleDropOn(target);
-            }
 
             DestroyDragIcon();
             s_dragSource = null;
@@ -140,86 +164,103 @@ namespace MMO.Inventory
             // Backpack -> Backpack : move/merge
             if (_area == Area.Backpack && target._area == Area.Backpack)
             {
-                _player.CmdMove(_index, target._index);
+                _player.CmdMove(_index, target._index);            // ✅ 2-arg signature your PlayerInventory implements
                 return;
             }
 
-            // Backpack -> Equipment : equip to that slot
+            // Backpack -> Equipment : equip to that equipment index
             if (_area == Area.Backpack && target._area == Area.Equipment)
             {
-                _player.CmdEquip(_index, target._index);
+                _player.CmdEquip(_index, target._index);           // ✅ equip specific slot
                 return;
             }
 
-            // Equipment -> Backpack : unequip (goes to backpack best slot)
+            // Equipment -> Backpack : unequip (server picks backpack dest)
             if (_area == Area.Equipment && target._area == Area.Backpack)
             {
                 _player.CmdUnequip(_index);
                 return;
             }
 
-            // Equipment -> Equipment : simple swap not supported directly; do unequip then equip would be two steps.
-            // You can extend this by: _player.CmdUnequip(_index); then find the item in backpack and CmdEquip(...) if needed.
+            // Equipment -> Equipment : not supported here (could do unequip then equip in two steps if desired)
         }
 
-        // ---------- Drag icon helpers ----------
+        // ---------------------------------------------------------------------
+        // Tooltip (cursor-follow)
+        // ---------------------------------------------------------------------
+        public void OnPointerEnter(PointerEventData eventData)
+        {
+            if (string.IsNullOrEmpty(_itemId) || _amount <= 0) return;
+
+            var def = _def ?? _resolveDef?.Invoke(_itemId);
+            if (!def) return;
+
+            var payload = new UI.ItemTooltipCursor.Payload
+            {
+                Icon = def.icon,
+                Title = string.IsNullOrWhiteSpace(def.displayName) ? _itemId : def.displayName,
+                Body = def.description
+            };
+
+            UI.ItemTooltipCursor.Instance?.ShowAtCursor(payload);
+        }
+
+        public void OnPointerExit(PointerEventData eventData)
+        {
+            UI.ItemTooltipCursor.Instance?.Hide();
+        }
+
+        void OnDisable() => UI.ItemTooltipCursor.Instance?.Hide();
+
+        // ---------------------------------------------------------------------
+        // Drag icon helpers
+        // ---------------------------------------------------------------------
         void CreateDragIcon()
         {
-            if (s_canvas == null)
-            {
-                // pick any top-level canvas in the scene for overlay
-                s_canvas = FindObjectOfType<Canvas>();
-            }
-            if (s_dragIcon != null) Destroy(s_dragIcon);
+            if (s_canvas == null) return;
 
-            s_dragIcon = new GameObject("DraggingIcon", typeof(CanvasGroup), typeof(RectTransform), typeof(Image));
+            s_dragIcon = new GameObject("DragIcon", typeof(RectTransform), typeof(CanvasGroup), typeof(Image));
             s_dragRT = s_dragIcon.GetComponent<RectTransform>();
-            var cg = s_dragIcon.GetComponent<CanvasGroup>();
-            cg.blocksRaycasts = false;
-            cg.alpha = 0.8f;
+            s_dragRT.SetParent(s_canvas.transform, worldPositionStays: false);
 
             var img = s_dragIcon.GetComponent<Image>();
             img.raycastTarget = false;
             img.sprite = icon ? icon.sprite : null;
-            img.enabled = img.sprite != null;
 
-            var parent = s_canvas ? s_canvas.transform : transform.root;
-            s_dragIcon.transform.SetParent(parent, false);
-            s_dragRT.sizeDelta = icon ? (Vector2)(icon.rectTransform.rect.size) : new Vector2(64, 64);
+            var cg = s_dragIcon.GetComponent<CanvasGroup>();
+            cg.blocksRaycasts = false;
+            cg.interactable = false;
+            cg.alpha = 0.9f;
+
+            // size similar to slot icon
+            s_dragRT.sizeDelta = icon ? (Vector2)icon.rectTransform.rect.size : new Vector2(64, 64);
         }
 
-        void UpdateDragIcon(PointerEventData ev)
+        void UpdateDragIcon(PointerEventData eventData)
         {
-            if (s_dragRT == null) return;
+            if (s_dragRT == null || s_canvas == null) return;
             RectTransformUtility.ScreenPointToLocalPointInRectangle(
-                s_dragRT.parent as RectTransform, ev.position, ev.pressEventCamera, out var local);
+                s_canvas.transform as RectTransform, eventData.position, s_uiCam, out var local);
             s_dragRT.anchoredPosition = local;
         }
 
         void DestroyDragIcon()
         {
-            if (s_dragIcon != null) Destroy(s_dragIcon);
+            if (s_dragIcon) Destroy(s_dragIcon);
             s_dragIcon = null;
             s_dragRT = null;
         }
 
         InventorySlotView RaycastForSlot(PointerEventData ev)
         {
-            var results = UIRaycast(ev);
-            foreach (var r in results)
+            s_raycast.Clear();
+            EventSystem.current?.RaycastAll(ev, s_raycast);
+            for (int i = 0; i < s_raycast.Count; i++)
             {
-                var slot = r.gameObject.GetComponentInParent<InventorySlotView>();
+                var slot = s_raycast[i].gameObject.GetComponentInParent<InventorySlotView>();
                 if (slot != null) return slot;
             }
             return null;
-        }
-
-        static System.Collections.Generic.List<RaycastResult> s_raycast = new System.Collections.Generic.List<RaycastResult>(16);
-        static System.Collections.Generic.List<RaycastResult> UIRaycast(PointerEventData ev)
-        {
-            s_raycast.Clear();
-            EventSystem.current?.RaycastAll(ev, s_raycast);
-            return s_raycast;
         }
     }
 }

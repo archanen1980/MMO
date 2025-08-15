@@ -268,7 +268,7 @@ MonoBehaviour:
   syncDirection: 0
   syncMode: 0
   syncInterval: 0
-  backpackCapacity: 28
+  backpackCapacity: 49
   equipLayout: 8000000001000000020000000400000010000000080000002000000040000000
   itemLookup: {fileID: 0}
 --- !u!114 &7733239264075376872

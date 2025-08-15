@@ -10,15 +10,19 @@ namespace MMO.EditorTools
     [ToolkitModule("items", "Items", order: 10, icon: "d_Project")]
     public class ItemsModule : MMOToolkitModuleBase
     {
+        // ── Data ─────────────────────────────────────────────────────────────────
         ItemDef[] _items = Array.Empty<ItemDef>();      // raw, unsorted
-        ItemDef[] _view = Array.Empty<ItemDef>();       // filtered + sorted
+        ItemDef[] _view = Array.Empty<ItemDef>();      // filtered + sorted
 
         int _index = -1;                                // index within _view
         ItemDef _selected;
 
-        Vector2 _left, _right;
+        Vector2 _left, _right, _browser;
 
-        // --- New: sorting + search ---
+        enum Tab { List, Browser }
+        Tab _tab = Tab.List;
+
+        // ── Sort + Search (shared across tabs) ──────────────────────────────────
         enum SortMode { Name, ItemIdNumeric, ItemIdLex, Kind, EquipmentFirst }
         SortMode _sortMode = SortMode.Name;
         bool _sortAsc = true;
@@ -29,24 +33,59 @@ namespace MMO.EditorTools
 
         public override void OnGUI()
         {
+            // Header
             EditorGUILayout.LabelField("Items (Resources/Items)", EditorStyles.boldLabel);
             EditorGUILayout.Space(2);
 
-            // --- Controls row: sort + asc/desc + search ---
+            DrawTopBar();   // tabs at top-left + Add/Refresh/SaveAll + sort/search
+
+            // Tabs
+            switch (_tab)
+            {
+                case Tab.List: DrawListTab(); break;
+                case Tab.Browser: DrawBrowserTab(); break;
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────── Top bar
+        void DrawTopBar()
+        {
+            EditorGUI.BeginChangeCheck();
             using (new EditorGUILayout.HorizontalScope("box"))
             {
+                // Tabs at top-left
+                _tab = (Tab)GUILayout.Toolbar((int)_tab, new[] { "List", "Browser" }, GUILayout.Width(180));
+
+                GUILayout.Space(8);
+
+                // Global Add + Refresh + Save All (available in both tabs)
+                if (GUILayout.Button("Add Item…", GUILayout.Height(22)))
+                    ShowNewItemMenu();
+
+                if (GUILayout.Button("Refresh", GUILayout.Width(80), GUILayout.Height(22)))
+                    Refresh();
+
+                if (GUILayout.Button("Save All", GUILayout.Width(90), GUILayout.Height(22)))
+                {
+                    AssetDatabase.SaveAssets();
+                    Refresh();
+                }
+
+                GUILayout.Space(12);
+                GUILayout.FlexibleSpace();
+
+                // Sort controls
                 _sortMode = (SortMode)EditorGUILayout.EnumPopup(new GUIContent("Sort"), _sortMode, GUILayout.MaxWidth(260));
                 _sortAsc = GUILayout.Toggle(_sortAsc, _sortAsc ? "Asc" : "Desc", "Button", GUILayout.Width(60));
 
                 GUILayout.Space(8);
-                GUILayout.FlexibleSpace();
 
-                // simple search box
+                // Search
                 var newSearch = EditorGUILayout.TextField("Search", _search, GUILayout.MaxWidth(320));
                 if (newSearch != _search)
                 {
                     _search = newSearch;
-                    RebuildView(); // live filter
+                    RebuildView();
                 }
                 if (!string.IsNullOrEmpty(_search) && GUILayout.Button("×", GUILayout.Width(24)))
                 {
@@ -54,18 +93,17 @@ namespace MMO.EditorTools
                     RebuildView();
                 }
             }
+            if (EditorGUI.EndChangeCheck())
+                RebuildView();
+        }
 
+        // ─────────────────────────────────────────────────────────────── List tab
+        void DrawListTab()
+        {
             EditorGUILayout.BeginHorizontal();
 
-            // Left: list
+            // Left list
             EditorGUILayout.BeginVertical(GUILayout.Width(320));
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                if (GUILayout.Button("New Item…", GUILayout.Height(24)))
-                    ShowNewItemMenu();
-                if (GUILayout.Button("Refresh", GUILayout.Height(24), GUILayout.Width(80)))
-                    Refresh();
-            }
 
             using (var sv = new EditorGUILayout.ScrollViewScope(_left))
             {
@@ -111,21 +149,20 @@ namespace MMO.EditorTools
 
             EditorGUILayout.EndVertical();
 
-            // Right: inspector
+            // Right inspector
             EditorGUILayout.BeginVertical();
             EditorGUILayout.LabelField("Item Inspector", EditorStyles.boldLabel);
 
             _right = EditorGUILayout.BeginScrollView(_right);
             if (_selected == null)
             {
-                EditorGUILayout.HelpBox("Select an item on the left, or click 'New Item…' to create one.", MessageType.Info);
+                EditorGUILayout.HelpBox("Select an item on the left, or use 'Add Item…' above to create one.", MessageType.Info);
             }
             else
             {
                 EditorGUI.BeginChangeCheck();
 
                 _selected.displayName = EditorGUILayout.TextField("Display Name", _selected.displayName);
-
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     _selected.itemId = EditorGUILayout.TextField("Item ID", _selected.itemId);
@@ -133,7 +170,7 @@ namespace MMO.EditorTools
                     {
                         _selected.itemId = NextAvailableNumericItemId();
                         EditorUtility.SetDirty(_selected);
-                        RebuildView(); // resort if sorting by id
+                        RebuildView();
                     }
                 }
 
@@ -170,7 +207,7 @@ namespace MMO.EditorTools
                 if (EditorGUI.EndChangeCheck())
                 {
                     EditorUtility.SetDirty(_selected);
-                    RebuildView(); // keep list in-sync when fields change that affect sort/search
+                    RebuildView();
                 }
 
                 GUILayout.Space(6);
@@ -186,7 +223,101 @@ namespace MMO.EditorTools
             EditorGUILayout.EndHorizontal();
         }
 
-        // ---------- Create / Duplicate ----------
+        // ─────────────────────────────────────────────────────────── Browser tab
+        void DrawBrowserTab()
+        {
+            // Header row
+            using (new EditorGUILayout.HorizontalScope("Toolbar"))
+            {
+                GUILayout.Label("Icon", GUILayout.Width(48f));
+                GUILayout.Label("Name", GUILayout.Width(180f));
+                GUILayout.Label("Item ID", GUILayout.Width(90f + 44f + 6f));
+                GUILayout.Label("Kind", GUILayout.Width(110f));
+                GUILayout.Label("Craft", GUILayout.Width(70f));
+                GUILayout.Label("Max", GUILayout.Width(70f));
+                GUILayout.Label("Equip Slots", GUILayout.Width(150f));
+                GUILayout.Label("Wgt", GUILayout.Width(70f));
+                GUILayout.FlexibleSpace();
+                GUILayout.Label("Actions", GUILayout.Width(70f));
+            }
+
+            using (var sv = new EditorGUILayout.ScrollViewScope(_browser))
+            {
+                _browser = sv.scrollPosition;
+
+                foreach (var it in _view)
+                {
+                    if (!it) continue;
+
+                    EditorGUI.BeginChangeCheck();
+                    using (new EditorGUILayout.HorizontalScope("box"))
+                    {
+                        // Icon
+                        it.icon = (Sprite)EditorGUILayout.ObjectField(it.icon, typeof(Sprite), false, GUILayout.Width(48f), GUILayout.Height(48f));
+
+                        // Name
+                        it.displayName = EditorGUILayout.TextField(it.displayName, GUILayout.Width(180f));
+
+                        // Item ID + Auto
+                        using (new EditorGUILayout.HorizontalScope(GUILayout.Width(90f + 44f + 6f)))
+                        {
+                            it.itemId = EditorGUILayout.TextField(it.itemId, GUILayout.Width(90f));
+                            if (GUILayout.Button("Auto", GUILayout.Width(44f)))
+                            {
+                                it.itemId = NextAvailableNumericItemId();
+                            }
+                        }
+
+                        // Kind
+                        it.kind = (ItemKind)EditorGUILayout.EnumPopup(it.kind, GUILayout.Width(110f));
+
+                        // Craftable
+                        it.isCraftable = EditorGUILayout.Toggle(it.isCraftable, GUILayout.Width(70f));
+
+                        // Max stack
+                        it.maxStack = Mathf.Max(1, EditorGUILayout.IntField(it.maxStack, GUILayout.Width(70f)));
+
+                        // Equip slots (enabled only for Equipment)
+                        using (new EditorGUI.DisabledScope(it.kind != ItemKind.Equipment))
+                        {
+                            var mask = (EquipSlot)EditorGUILayout.EnumFlagsField(it.equipSlots, GUILayout.Width(150f));
+                            it.equipSlots = (it.kind == ItemKind.Equipment) ? mask : EquipSlot.None;
+                        }
+
+                        // Weight
+                        it.weight = EditorGUILayout.FloatField(it.weight, GUILayout.Width(70f));
+
+                        GUILayout.FlexibleSpace();
+
+                        // Actions
+                        using (new EditorGUILayout.HorizontalScope(GUILayout.Width(70f)))
+                        {
+                            if (GUILayout.Button("Ping", GUILayout.Width(44)))
+                                EditorGUIUtility.PingObject(it);
+                            if (GUILayout.Button("X", GUILayout.Width(20)))
+                            {
+                                if (EditorUtility.DisplayDialog("Delete Item",
+                                        $"Delete '{(string.IsNullOrWhiteSpace(it.displayName) ? it.name : it.displayName)}'?",
+                                        "Delete", "Cancel"))
+                                {
+                                    var path = AssetDatabase.GetAssetPath(it);
+                                    AssetDatabase.DeleteAsset(path);
+                                    Refresh();
+                                    GUIUtility.ExitGUI();
+                                }
+                            }
+                        }
+                    }
+
+                    if (EditorGUI.EndChangeCheck())
+                        EditorUtility.SetDirty(it);
+                }
+            }
+
+            // Note: Save All moved to top bar; no bottom button here anymore.
+        }
+
+        // ───────────────────────────────────────────────────── Create / Duplicate
         void ShowNewItemMenu()
         {
             var menu = new GenericMenu();
@@ -239,7 +370,7 @@ namespace MMO.EditorTools
             EditorGUIUtility.PingObject(clone);
         }
 
-        // ---------- Data / view ----------
+        // ───────────────────────────────────────────────────────── Data / view
         void Refresh()
         {
             ModuleUtil.EnsureFolder(ModuleUtil.ItemsFolder);
@@ -293,7 +424,6 @@ namespace MMO.EditorTools
                     break;
 
                 case SortMode.EquipmentFirst:
-                    // Equipment first, then by name
                     q = _sortAsc
                         ? q.OrderByDescending(it => it.kind == ItemKind.Equipment).ThenBy(NameKey, StringComparer.OrdinalIgnoreCase)
                         : q.OrderBy(it => it.kind == ItemKind.Equipment).ThenBy(NameKey, StringComparer.OrdinalIgnoreCase);
@@ -320,8 +450,7 @@ namespace MMO.EditorTools
         static int IdNumKey(ItemDef it)
         {
             if (int.TryParse(it.itemId?.Trim(), out int n)) return n;
-            // non-numeric IDs sort after numerics
-            return int.MaxValue;
+            return int.MaxValue; // non-numeric IDs sort after numerics
         }
 
         string ValidateUniqueId(ItemDef target)
@@ -347,7 +476,7 @@ namespace MMO.EditorTools
             return id + "_" + n;
         }
 
-        // Numeric next-id for the Auto button
+        // Numeric next-id for Auto buttons
         static string NextAvailableNumericItemId()
         {
             string[] guids = AssetDatabase.FindAssets("t:ItemDef", new[] { ModuleUtil.ItemsFolder });
