@@ -36808,19 +36808,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: de15bbcb7f3d5a54fab345e801d6f8ee, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  rootCanvas: {fileID: 496073740}
-  group: {fileID: 2139338763}
-  panel: {fileID: 2139338760}
-  panelLE: {fileID: 2139338766}
-  iconImage: {fileID: 323287085}
-  titleText: {fileID: 1867700525}
-  bodyText: {fileID: 1109183770}
-  minWidth: 260
-  maxWidth: 420
-  cursorOffset: {x: 16, y: -16}
-  screenPadding: 12
-  _uiCam: {fileID: 0}
-  _visible: 0
 --- !u!114 &2139338770
 MonoBehaviour:
   m_ObjectHideFlags: 0

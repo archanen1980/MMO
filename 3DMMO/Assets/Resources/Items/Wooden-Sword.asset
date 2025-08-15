@@ -10,14 +10,14 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 680d9df6d037e2643a3b246621332d67, type: 3}
-  m_Name: new_equipment 7
+  m_Name: Wooden-Sword
   m_EditorClassIdentifier: 
-  itemId: 8
-  displayName: Cloth Shoes
-  icon: {fileID: 21300000, guid: 4db15df35e0ec7a459d3590fc03c3356, type: 3}
+  itemId: 1
+  displayName: Wooden Sword
+  icon: {fileID: 21300000, guid: c6b20f64a2c03a5468e3131991213fb8, type: 3}
   description: 
   maxStack: 1
   weight: 0
   kind: 1
   isCraftable: 1
-  equipSlots: 16
+  equipSlots: 32

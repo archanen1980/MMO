@@ -10,7 +10,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 680d9df6d037e2643a3b246621332d67, type: 3}
-  m_Name: new_equipment 3
+  m_Name: Cloth-Cap
   m_EditorClassIdentifier: 
   itemId: 4
   displayName: Cloth Cap

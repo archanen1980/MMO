@@ -4,6 +4,7 @@ using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using MMO.Shared.Item;
+using MMO.EditorTools; // at top of the file
 
 namespace MMO.EditorTools
 {
