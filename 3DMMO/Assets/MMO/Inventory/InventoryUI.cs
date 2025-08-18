@@ -24,7 +24,7 @@ namespace MMO.Inventory
         public TMP_Text title;
 
         bool _subscribed;
-
+        bool _isRebuilding;
         void Awake()
         {
             if (title != null && string.IsNullOrWhiteSpace(title.text))
@@ -79,20 +79,27 @@ namespace MMO.Inventory
 
             BuildGrid(equipmentGrid, equipCount);
             BuildGrid(backpackGrid, player.Backpack.Count);
-
-            // equipment
-            for (int i = 0; i < equipCount; i++)
+            if (_isRebuilding) return;
+            _isRebuilding = true;
+            try
             {
-                var view = equipmentGrid.GetChild(i).GetComponent<InventorySlotView>();
-                BindSlot(view, InventorySlotView.Area.Equipment, i, GetSlot(player.Equipped, i));
-            }
+                if (player == null || slotPrefab == null || equipmentGrid == null || backpackGrid == null)
+                    return;
+                // equipment
+                for (int i = 0; i < equipCount; i++)
+                {
+                    var view = equipmentGrid.GetChild(i).GetComponent<InventorySlotView>();
+                    BindSlot(view, InventorySlotView.Area.Equipment, i, GetSlot(player.Equipped, i));
+                }
 
-            // backpacka
-            for (int i = 0; i < player.Backpack.Count; i++)
-            {
-                var view = backpackGrid.GetChild(i).GetComponent<InventorySlotView>();
-                BindSlot(view, InventorySlotView.Area.Backpack, i, GetSlot(player.Backpack, i));
+                // backpacka
+                for (int i = 0; i < player.Backpack.Count; i++)
+                {
+                    var view = backpackGrid.GetChild(i).GetComponent<InventorySlotView>();
+                    BindSlot(view, InventorySlotView.Area.Backpack, i, GetSlot(player.Backpack, i));
+                }
             }
+            finally { _isRebuilding = false; }
         }
 
         void BuildGrid(Transform root, int desired)

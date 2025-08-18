@@ -28,7 +28,8 @@ namespace MMO.Inventory
         public bool onlyIfEmpty = true;
         [Tooltip("Clear backpack before seeding.")]
         public bool clearBackpackFirst = false;
-
+        static bool s_seededThisSession;
+        
         [Header("Items to Seed")]
         public SeedEntry[] items =
         {

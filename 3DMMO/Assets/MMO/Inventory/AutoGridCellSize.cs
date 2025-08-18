@@ -12,6 +12,10 @@ public class AutoGridCellSize : MonoBehaviour
     GridLayoutGroup grid;
     RectTransform rt;
 
+    Vector2 _lastCell = new Vector2(-1, -1);
+    int _lastCols = -1, _lastRows = -1;
+    Vector2 _lastRectSize;
+
     void OnEnable() { Apply(); }
     void OnRectTransformDimensionsChange() { Apply(); }
 
@@ -26,14 +30,17 @@ public class AutoGridCellSize : MonoBehaviour
         float h = rt.rect.height - pad.top - pad.bottom - grid.spacing.y * (rows - 1);
         if (w <= 0 || h <= 0) return;
 
-        float cellW = w / columns;
-        float cellH = h / rows;
+        float cellW = Mathf.Floor(w / columns);
+        float cellH = Mathf.Floor(h / rows);
+        var newCell = keepSquare ? Vector2.one * Mathf.Floor(Mathf.Min(cellW, cellH))
+                                 : new Vector2(cellW, cellH);
 
-        if (keepSquare)
-        {
-            float s = Mathf.Floor(Mathf.Min(cellW, cellH));
-            grid.cellSize = new Vector2(s, s);
-        }
-        else grid.cellSize = new Vector2(Mathf.Floor(cellW), Mathf.Floor(cellH));
+        // short-circuit if no effective change
+        var rectSize = new Vector2(rt.rect.width, rt.rect.height);
+        if (_lastCols == columns && _lastRows == rows && _lastCell == newCell && _lastRectSize == rectSize)
+            return;
+
+        grid.cellSize = newCell;
+        _lastCell = newCell; _lastCols = columns; _lastRows = rows; _lastRectSize = rectSize;
     }
 }

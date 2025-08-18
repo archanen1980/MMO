@@ -11,6 +11,10 @@ public class AutoGridByColumns : MonoBehaviour
     GridLayoutGroup grid;
     RectTransform rt;
 
+    float _lastW = -1f;
+    int _lastCols = -1;
+    Vector2 _lastCell;
+
     void OnEnable() { Apply(); }
     void OnRectTransformDimensionsChange() { Apply(); }
 
@@ -25,7 +29,13 @@ public class AutoGridByColumns : MonoBehaviour
         if (w <= 0) return;
 
         float cell = Mathf.Floor(w / columns);
-        if (keepSquare) grid.cellSize = new Vector2(cell, cell);
-        else grid.cellSize = new Vector2(cell, grid.cellSize.y);
+        var newCell = keepSquare ? new Vector2(cell, cell) : new Vector2(cell, grid.cellSize.y);
+
+        // short-circuit if nothing effectively changed
+        if (Mathf.Approximately(_lastW, w) && _lastCols == columns && (Vector2)grid.cellSize == newCell)
+            return;
+
+        grid.cellSize = newCell;
+        _lastW = w; _lastCols = columns; _lastCell = newCell;
     }
 }

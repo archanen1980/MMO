@@ -39,6 +39,7 @@ namespace MMO.Inventory
 
         private void BuildIndex()
         {
+            
             dict.Clear();
             var dupes = new HashSet<int>();
 
@@ -67,26 +68,28 @@ namespace MMO.Inventory
                         IndexPath(p, dupes);
             }
 
+#if UNITY_EDITOR
             if (verbose)
             {
-                if (dict.Count == 0)
-                {
-                    Debug.LogWarning("[ResourcesItemLookup] Indexed 0 ItemDefs. " +
-                                     "Either your items aren't under the configured Resources subpaths, " +
-                                     "or 'itemId' couldn't be parsed to a number.\n" +
-                                     "SearchPaths = [" + string.Join(", ", searchPaths) + "]");
-                }
-                else
-                {
-                    string map = string.Join(", ", dict.Select(kv =>
-                        kv.Key + ":" + (string.IsNullOrEmpty(kv.Value.displayName) ? kv.Value.name : kv.Value.displayName)));
-                    Debug.Log("[ResourcesItemLookup] Indexed " + dict.Count + " ItemDefs from [" +
-                              string.Join(", ", searchPaths) + "]. Map = [" + map + "]");
-                }
+                int count = dict.Count;
+                const int cap = 200; // don’t spam the console
+                var preview = dict.Take(cap)
+                    .Select(kv => kv.Key + ":" + (string.IsNullOrEmpty(kv.Value.displayName) ? kv.Value.name : kv.Value.displayName));
+                Debug.Log($"[ResourcesItemLookup] Indexed {count} ItemDefs from [{string.Join(", ", searchPaths)}]. " +
+                          $"Showing first {Mathf.Min(cap, count)}: {string.Join(", ", preview)}");
 
                 if (dupes.Count > 0)
                     Debug.LogWarning("[ResourcesItemLookup] Duplicate numeric itemIds ignored (kept first): " +
                                      string.Join(", ", dupes.ToArray()));
+            }
+#endif
+
+            // (Optional hard-guard near your 'doGlobal' logic)
+            if (doGlobal)
+            {
+#if UNITY_EDITOR
+                Debug.LogWarning("[ResourcesItemLookup] Global scan ('*' or '') enabled. This is heavy. Consider scoping to 'Items/'.");
+#endif
             }
         }
 
