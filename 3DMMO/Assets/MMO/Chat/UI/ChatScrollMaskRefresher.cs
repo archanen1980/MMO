@@ -102,5 +102,6 @@ namespace MMO.Chat.UI
                 }
             }
         }
+        
     }
 }
