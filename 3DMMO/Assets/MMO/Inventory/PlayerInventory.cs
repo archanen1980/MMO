@@ -4,6 +4,7 @@ using System.Reflection;
 using UnityEngine;
 using Mirror;
 using MMO.Shared.Item; // ItemDef, ItemKind, EquipSlot
+using MMO.Chat; // for LootChatBridge
 
 // Alias for readability
 using EquipSlotAlias = MMO.Shared.Item.EquipSlot;
@@ -354,6 +355,64 @@ namespace MMO.Inventory
         [Command] public void CmdMove(int from, int to, bool split, int amount) => ServerMoveCompat(from, to, split, Math.Max(1, amount), true);
         [Command] public void CmdMove(int from, int to, int amount, bool allowSwap) => ServerMoveCompat(from, to, true, Math.Max(1, amount), allowSwap);
         //[Command] public void CmdMove(int from, int to, bool allowSwap) => ServerMoveCompat(from, to, false, 0, allowSwap);
+
+        [Command]
+        public void CmdCheatAddItem(int legacyNumericId, int amount)
+        {
+            if (amount <= 0) return;
+
+            int added = ServerAdd(legacyNumericId, amount);
+            if (added > 0)
+            {
+                string itemId = legacyNumericId.ToString();
+                string itemName = TryGetDisplayName(ResolveDef(itemId)) ?? itemId;
+                TargetNotifyLootReceived(connectionToClient, itemId, itemName, added);
+            }
+        }
+
+        [Command]
+        public void CmdCheatAddItemS(string itemId, int amount)
+        {
+            if (string.IsNullOrWhiteSpace(itemId) || amount <= 0) return;
+
+            int added = ServerAdd(itemId, amount);
+            if (added > 0)
+            {
+                string itemName = TryGetDisplayName(ResolveDef(itemId)) ?? itemId;
+                TargetNotifyLootReceived(connectionToClient, itemId, itemName, added);
+            }
+        }
+
+        /// <summary>
+        /// Owner-only notification to post a local Loot-channel message with a clickable item link.
+        /// </summary>
+        [TargetRpc]
+        void TargetNotifyLootReceived(NetworkConnectionToClient conn, string itemId, string itemName, int amount)
+        {
+            LootChatBridge.PostLootReceived(itemId, itemName, amount);
+        }
+
+        // Prefer “displayName” if available; fall back to Unity name or itemId.
+        private string TryGetDisplayName(MMO.Shared.Item.ItemDef def)
+        {
+            if (!def) return null;
+
+            // Try common property names via reflection, then fallback to UnityEngine.Object.name.
+            try
+            {
+                var t = def.GetType();
+                var p = t.GetProperty("displayName") ?? t.GetProperty("DisplayName") ?? t.GetProperty("title") ?? t.GetProperty("Title");
+                if (p != null)
+                {
+                    var v = p.GetValue(def) as string;
+                    if (!string.IsNullOrWhiteSpace(v)) return v;
+                }
+            }
+            catch { /* ignore */ }
+
+            // Unity object name (often human-readable for ScriptableObject assets)
+            return def.name;
+        }
 
         [Server]
         void ServerMoveCompat(int from, int to, bool split, int amount, bool allowSwap)

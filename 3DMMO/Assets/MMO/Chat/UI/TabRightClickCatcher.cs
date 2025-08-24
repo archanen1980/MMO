@@ -1,4 +1,4 @@
-// Assets/MMO/Chat/UI/TabBarRightClickCatcher.cs
+// Assets/MMO/Chat/UI/TabRightClickCatcher.cs
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
@@ -6,12 +6,12 @@ using UnityEngine.UI;
 namespace MMO.Chat.UI
 {
     /// <summary>
-    /// Put this on the ChatWindow root. Opens the TabBar menu when
-    /// right-click occurs INSIDE the tab-bar viewport but NOT over any tab.
+    /// Put this on the ChatWindow root. Opens the Tab context menu
+    /// when right-click occurs over a tab Toggle inside tabBarContent.
     /// </summary>
     [DisallowMultipleComponent]
-    [AddComponentMenu("MMO/Chat/Tab Bar Right Click Catcher (Root)")]
-    public class TabBarRightClickCatcher : MonoBehaviour, IPointerClickHandler
+    [AddComponentMenu("MMO/Chat/Tab Right Click Catcher (Root)")]
+    public class TabRightClickCatcher : MonoBehaviour, IPointerClickHandler
     {
         [Tooltip("Owning ChatWindow")]
         public ChatWindow owner;
@@ -30,6 +30,7 @@ namespace MMO.Chat.UI
             if (!tabBarContent && owner)
                 tabBarContent = owner.transform.Find("Header/TabScroll/Viewport/TabBarContent");
 
+            // Ensure root can receive clicks (transparent & raycastable is fine)
             var g = GetComponent<Graphic>();
             if (!g)
             {
@@ -43,7 +44,7 @@ namespace MMO.Chat.UI
         public void OnPointerClick(PointerEventData e)
         {
             if (e.button != PointerEventData.InputButton.Right) return;
-            if (!owner || !tabBarViewport) return;
+            if (!owner || !tabBarContent || !tabBarViewport) return;
 
             var canvas = tabBarViewport.GetComponentInParent<Canvas>();
             var cam = (canvas && canvas.renderMode != RenderMode.ScreenSpaceOverlay) ? canvas.worldCamera : null;
@@ -52,25 +53,28 @@ namespace MMO.Chat.UI
             if (!RectTransformUtility.RectangleContainsScreenPoint(tabBarViewport, e.position, cam))
                 return;
 
-            // If we're over a tab, let the Tab catcher handle it
-            if (IsOverAnyTab(e.position, cam)) return;
+            int tabIndex = FindTabIndexAt(e.position, cam);
+            if (tabIndex < 0) return;
 
-            // Otherwise, it's empty space in the bar → show TabBar menu
-            owner.ShowContextMenu("TabBar", e.position, null);
+            // We found a tab: open the Tab menu
+            owner.ShowContextMenu("Tab", e.position, tabIndex);
         }
 
-        bool IsOverAnyTab(Vector2 screenPos, Camera cam)
+        int FindTabIndexAt(Vector2 screenPos, Camera cam)
         {
-            if (!tabBarContent) return false;
+            if (!tabBarContent) return -1;
+            int logical = 0;
             for (int i = 0; i < tabBarContent.childCount; i++)
             {
                 var child = tabBarContent.GetChild(i);
-                if (!child.GetComponent<Toggle>()) continue;
+                var tog = child.GetComponent<Toggle>();
+                if (!tog) continue; // skip non-tab children
                 var rt = child as RectTransform;
                 if (rt && RectTransformUtility.RectangleContainsScreenPoint(rt, screenPos, cam))
-                    return true;
+                    return logical;
+                logical++;
             }
-            return false;
+            return -1;
         }
     }
 }

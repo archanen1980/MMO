@@ -229,8 +229,8 @@ namespace MMO.Common.UI
             if (!templateButton || !content) return;
 
             // Add a separator only if other actionable items were added first
-            if (_hasActionItemAdded)
-                AddSeparator(4f, 0.15f);
+           // if (_hasActionItemAdded)
+            //    AddSeparator(4f, 0.15f);
 
             var b = Instantiate(templateButton, content);
             b.gameObject.SetActive(true);

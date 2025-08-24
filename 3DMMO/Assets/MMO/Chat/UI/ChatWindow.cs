@@ -1,108 +1,127 @@
-// Assets/MMO/Chat/UI/ChatWindow.cs
 using System;
 using System.Collections.Generic;
+using System.Reflection;              // reflection helpers (right-click catcher wiring)
 using System.Text;
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using MMO.Chat;        // ChatChannel, ChatMessage
-using MMO.Common.UI;  // UIContextMenu
+using MMO.Chat.UI;     // ChatLine
+using MMO.Common.UI;   // UIContextMenu
 
 namespace MMO.Chat.UI
 {
+    /// <summary>
+    /// Lightweight, readable chat window with tabs, context menus, rename/filter popups,
+    /// bracket hotkeys for tab switching, and minimal allocations.
+    /// </summary>
     public class ChatWindow : MonoBehaviour
     {
-        [Header("Mouse / Focus")]
-        [SerializeField] bool manageCursorWhenFocused = true;
-        [SerializeField] Behaviour[] disableWhileFocused;
+        // ----------------- Inspector Wiring -----------------
 
-        [Header("Wiring")]
-        [SerializeField] ScrollRect scrollRect;
-        [SerializeField] RectTransform content;
-        [SerializeField] ChatLine linePrefab;
+        [Header("Chat List")]
+        [SerializeField] private ScrollRect scrollRect;
+        [SerializeField] private RectTransform content;
+        [SerializeField] private ChatLine linePrefab;
 
-        [Header("Input bar")]
-        [SerializeField] TMP_InputField inputField;
-        [SerializeField] TMP_Dropdown channelDropdown;
-        [SerializeField] Button sendButton;
+        [Header("Input Bar")]
+        [SerializeField] private TMP_InputField inputField;
+        [SerializeField] private TMP_Dropdown channelDropdown;
+        [SerializeField] private Button sendButton;
 
-        [Header("Tabs (Scrollable)")]
-        [Tooltip("ScrollRect that contains the tab bar (horizontal).")]
-        [SerializeField] ScrollRect tabScrollRect;
-        [Tooltip("Viewport RectTransform inside the tab ScrollRect.")]
-        [SerializeField] RectTransform tabViewport;
-        [Tooltip("Content RectTransform inside the tab ScrollRect; tabs will be parented here.")]
-        [SerializeField] RectTransform tabContent;
-        [SerializeField] Toggle tabButtonPrefab;
+        [Header("Tabs UI")]
+        [Tooltip("Container that holds the tab Toggle objects (e.g., Header/TabScroll/Viewport/TabBarContent)")]
+        [SerializeField] private Transform tabBar;
+        [Tooltip("Toggle prefab for each tab (must have a raycastable Graphic)")]
+        [SerializeField] private Toggle tabButtonPrefab;
+        [SerializeField] private ToggleGroup tabToggleGroup;
 
-        [Header("Filters panel (optional)")]
-        [SerializeField] GameObject filtersPanel;
-        [SerializeField] Toggle systemT, generalT, sayT, whisperT, partyT, guildT, tradeT, lootT, combatT, globalT;
+        [Header("Optional Legacy Filters Panel")]
+        [SerializeField] private GameObject legacyFiltersPanel;
+        [SerializeField] private Toggle systemT, generalT, sayT, whisperT, partyT, guildT, tradeT, lootT, combatT, globalT;
 
         [Header("Behavior")]
-        [SerializeField] int maxLines = 300;
-        [SerializeField] bool autoScroll = true;
-        [SerializeField] bool timestamp24h = true;
+        [SerializeField] private int maxVisibleLines = 300;
+        [SerializeField] private int maxHistoryLines = 1000;
+        [SerializeField] private bool autoScrollToBottom = true;
+        [SerializeField] private bool use24HourTimestamps = true;
+        [SerializeField] private bool showTimestamps = false;
 
         [Header("Hotkeys")]
-        [SerializeField] KeyCode focusKey = KeyCode.Return;
-        [SerializeField] KeyCode cancelKey = KeyCode.Escape;
-        [SerializeField] KeyCode quickSlashKey = KeyCode.Slash;
+        [SerializeField] private KeyCode focusKey = KeyCode.Return;
+        [SerializeField] private KeyCode cancelKey = KeyCode.Escape;
+        [SerializeField] private KeyCode quickSlashKey = KeyCode.Slash;
+        [SerializeField] private KeyCode previousTabKey = KeyCode.LeftBracket;  // '['
+        [SerializeField] private KeyCode nextTabKey = KeyCode.RightBracket; // ']'
 
-        [Header("Send settings")]
-        [SerializeField] bool keepFocusAfterSend = false;
-        bool _suppressEnterRefocus;
-        [SerializeField] bool showTimestamps = false;
+        [Header("Send Settings")]
+        [SerializeField] private bool keepFocusAfterSend = false;
 
-        [Header("Context Menu")]
-        [SerializeField] RectTransform menuRootOverride; // assign your MainHudCanvas root if you want
+        [Header("Cursor / Gameplay Integration")]
+        [SerializeField] private bool manageCursorWhenChatFocused = true;
+        [Tooltip("Optional: components to disable while typing (e.g., FPS look/move scripts).")]
+        [SerializeField] private Behaviour[] disableWhileChatFocused;
 
-        [Header("Tab Scrolling")]
-        [Tooltip("Mouse wheel to horizontal scroll speed while pointer is over the tab bar.")]
-        [Range(0.01f, 1f)]
-        [SerializeField] float tabScrollWheelSpeed = 0.15f;
+        [Header("Popup Layer")]
+        [Tooltip("Optional override for where popups/menus appear. If empty, a top canvas is auto-created.")]
+        [SerializeField] private RectTransform popupRootOverride;
+        [SerializeField] private int popupSortingOrder = 5000;
 
-        [Serializable] public class Tab { public string label; public ChatChannel mask; }
-        [SerializeField]
-        List<Tab> tabs = new()
+        // ----------------- Tabs Model -----------------
+
+        [Serializable]
+        public class Tab
         {
-            new Tab{ label="All",     mask=ChatChannel.All },
-            new Tab{ label="General", mask=ChatChannel.General|ChatChannel.Say|ChatChannel.Whisper|ChatChannel.Global },
-            new Tab{ label="Group",   mask=ChatChannel.Party|ChatChannel.Guild|ChatChannel.Say|ChatChannel.Whisper },
-            new Tab{ label="Loot",    mask=ChatChannel.Loot|ChatChannel.System },
-            new Tab{ label="Combat",  mask=ChatChannel.Combat|ChatChannel.System },
+            public string label;
+            public ChatChannel channelMask;
+        }
+
+        [SerializeField]
+        private List<Tab> tabs = new()
+        {
+            new Tab { label = "All",     channelMask = ChatChannel.All },
+            new Tab { label = "General", channelMask = ChatChannel.General | ChatChannel.Say | ChatChannel.Whisper | ChatChannel.Global },
+            new Tab { label = "Group",   channelMask = ChatChannel.Party   | ChatChannel.Guild | ChatChannel.Say     | ChatChannel.Whisper },
+            new Tab { label = "Loot",    channelMask = ChatChannel.Loot    | ChatChannel.System },
+            new Tab { label = "Combat",  channelMask = ChatChannel.Combat  | ChatChannel.System },
         };
 
-        int _activeTab = 0;
-        readonly List<ChatLine> _lines = new();
+        private int activeTabIndex = 0;
 
-        // persistence
-        const string KeyTab = "chat.tab";
-        const string KeyPosX = "chat.posx";
-        const string KeyPosY = "chat.posy";
-        const string KeyW = "chat.w";
-        const string KeyH = "chat.h";
+        // ----------------- State -----------------
 
-        // Mouse/cursor state cache
-        CursorLockMode _prevLockMode;
-        bool _prevCursorVisible;
-        bool _cursorManagedThisFocus;
+        private readonly List<ChatLine> visibleLines = new();
+        private readonly List<ChatMessage> history = new(); // oldest..newest
+
+        private bool suppressEnterRefocus;
+
+        // Chat focus mouse state
+        private CursorLockMode cachedLockMode;
+        private bool cachedCursorVisible;
+        private bool cursorManagedThisFocus;
+
+        // Strong popup cursor guard
+        private bool popupCursorForce;
+        private Coroutine popupCursorRoutine;
+        private CursorLockMode popupPrevLock;
+        private bool popupPrevVisible;
 
         public static event Action<bool> OnChatFocusChanged;
 
-        // inline rename popup tracker
-        GameObject _openPopupGO;
+        // PlayerPrefs keys (position/size + active tab)
+        private const string PrefKeyTab = "chat.tab";
+        private const string PrefKeyPosX = "chat.posx";
+        private const string PrefKeyPosY = "chat.posy";
+        private const string PrefKeyW = "chat.w";
+        private const string PrefKeyH = "chat.h";
 
-        void Awake()
+        // ----------------- Unity Lifecycle -----------------
+
+        private void Awake()
         {
-            EnsureIndex0IsBottomRig();
-            EnsureTabBarScrollRig();
-
-            BuildTabs();                   // builds toggle buttons under tabContent and right-click hooks
-            EnsureTabBarHitArea();         // flexible spacer for empty-right-click
-            AddViewportRightClickCatcher();// right-click anywhere in the visible bar
-            BuildChannelDropdown();        // ← restored
+            BuildTabs();
+            BuildChannelDropdown();
 
             if (sendButton) sendButton.onClick.AddListener(SendFromInput);
             if (inputField)
@@ -111,326 +130,762 @@ namespace MMO.Chat.UI
                 inputField.onFocusSelectAll = false;
             }
 
-            _activeTab = PlayerPrefs.GetInt(KeyTab, 0);
-            SelectTab(_activeTab);
+            // Restore persisted state
+            activeTabIndex = PlayerPrefs.GetInt(PrefKeyTab, 0);
+            SelectTab(activeTabIndex);
 
             var rt = (RectTransform)transform;
             var pos = rt.anchoredPosition;
-            pos.x = PlayerPrefs.GetFloat(KeyPosX, pos.x);
-            pos.y = PlayerPrefs.GetFloat(KeyPosY, pos.y);
+            pos.x = PlayerPrefs.GetFloat(PrefKeyPosX, pos.x);
+            pos.y = PlayerPrefs.GetFloat(PrefKeyPosY, pos.y);
             rt.anchoredPosition = pos;
+
             var size = rt.sizeDelta;
-            size.x = PlayerPrefs.GetFloat(KeyW, size.x);
-            size.y = PlayerPrefs.GetFloat(KeyH, size.y);
+            size.x = PlayerPrefs.GetFloat(PrefKeyW, size.x);
+            size.y = PlayerPrefs.GetFloat(PrefKeyH, size.y);
             rt.sizeDelta = size;
 
-            SafeRebuildAndMaskRefresh(true);
+            ConfigureChatListLayout();
+            RefreshLayoutAndMask(true);
+            UpdateTabOutlines();
+
+            _ = EnsurePopupLayerExists(); // prepare popup layer once
         }
 
-        void OnEnable()
+        private void OnEnable()
         {
-            ChatClient.OnMessage += OnMessage;
-            SafeRebuildAndMaskRefresh(true);
+            ChatClient.OnMessage += HandleIncomingMessage;
+            RefreshLayoutAndMask(true);
         }
 
-        void OnDisable()
+        private void OnDisable()
         {
-            ChatClient.OnMessage -= OnMessage;
+            ChatClient.OnMessage -= HandleIncomingMessage;
 
-            PlayerPrefs.SetInt(KeyTab, _activeTab);
+            PlayerPrefs.SetInt(PrefKeyTab, activeTabIndex);
             var rt = (RectTransform)transform;
-            PlayerPrefs.SetFloat(KeyPosX, rt.anchoredPosition.x);
-            PlayerPrefs.SetFloat(KeyPosY, rt.anchoredPosition.y);
-            PlayerPrefs.SetFloat(KeyW, rt.sizeDelta.x);
-            PlayerPrefs.SetFloat(KeyH, rt.sizeDelta.y);
+            PlayerPrefs.SetFloat(PrefKeyPosX, rt.anchoredPosition.x);
+            PlayerPrefs.SetFloat(PrefKeyPosY, rt.anchoredPosition.y);
+            PlayerPrefs.SetFloat(PrefKeyW, rt.sizeDelta.x);
+            PlayerPrefs.SetFloat(PrefKeyH, rt.sizeDelta.y);
 
-            RestoreMouseAfterUI();
-            CloseInlinePopup();
+            RestoreMouseAfterChat();
+            EndPopupCursorGuard(); // <— previously referenced as StopPopupCursorGuard
         }
 
-        void Update()
+        private void Update()
         {
-            // hotkeys for chat input focus
-            if (inputField)
+            if (!inputField) return;
+
+            // Focus chat
+            if ((Input.GetKeyDown(focusKey) || Input.GetKeyDown((KeyCode)271)) && !suppressEnterRefocus)
             {
-                if ((Input.GetKeyDown(focusKey) || Input.GetKeyDown(KeypadEnter())) && !_suppressEnterRefocus)
-                {
-                    if (!inputField.isFocused) { FocusInput(); return; }
-                }
-
-                if (Input.GetKeyDown(quickSlashKey) && !inputField.isFocused)
-                {
-                    FocusInput();
-                    inputField.text = "/";
-                    inputField.caretPosition = inputField.text.Length;
-                }
-
-                if (Input.GetKeyDown(cancelKey) && inputField.isFocused)
-                    UnfocusInput();
+                if (!inputField.isFocused) { FocusChatInput(); return; }
             }
 
-            // mouse wheel → horizontal scroll when hovering the tab bar
-            if (tabScrollRect && tabViewport)
+            // Quick slash to type commands
+            if (Input.GetKeyDown(quickSlashKey) && !inputField.isFocused)
             {
-                if (RectTransformUtility.RectangleContainsScreenPoint(tabViewport, Input.mousePosition))
-                {
-                    float dy = Input.mouseScrollDelta.y; // up/down wheel
-                    if (Mathf.Abs(dy) > 0.001f)
-                    {
-                        float t = tabScrollRect.horizontalNormalizedPosition;
-                        t = Mathf.Clamp01(t - dy * tabScrollWheelSpeed); // wheel up scrolls left
-                        tabScrollRect.horizontalNormalizedPosition = t;
-                    }
-                }
+                FocusChatInput();
+                inputField.text = "/";
+                inputField.caretPosition = inputField.text.Length;
+            }
+
+            // Cancel chat focus
+            if (Input.GetKeyDown(cancelKey) && inputField.isFocused)
+                UnfocusChatInput();
+
+            // Tab cycling via hotkeys (brackets), but not while a popup is open or typing
+            if (!popupCursorForce && inputField && !inputField.isFocused)
+            {
+                if (Input.GetKeyDown(previousTabKey)) CycleTab(-1);
+                if (Input.GetKeyDown(nextTabKey)) CycleTab(+1);
             }
         }
 
-        static KeyCode KeypadEnter() => (KeyCode)271; // KeyCode.KeypadEnter
+        // ----------------- Tabs -----------------
 
-        // ---------- Tabs (Scrollable bar) ----------
-        void EnsureTabBarScrollRig()
+        private void BuildTabs()
         {
-            if (!tabScrollRect || !tabViewport || !tabContent) return;
+            if (!tabBar || !tabButtonPrefab) return;
 
-            // ScrollRect config
-            tabScrollRect.horizontal = true;
-            tabScrollRect.vertical = false;
-            tabScrollRect.movementType = ScrollRect.MovementType.Clamped;
-            tabScrollRect.viewport = tabViewport;
-            tabScrollRect.content = tabContent;
+            // Ensure a ToggleGroup for single selection
+            var group = tabToggleGroup ? tabToggleGroup : tabBar.GetComponent<ToggleGroup>();
+            if (!group) group = tabBar.gameObject.AddComponent<ToggleGroup>();
+            group.allowSwitchOff = false;
+            tabToggleGroup = group;
 
-            // Viewport: needs Image + RectMask2D
-            var vpImg = tabViewport.GetComponent<Image>() ?? tabViewport.gameObject.AddComponent<Image>();
-            vpImg.color = new Color(0, 0, 0, 0); vpImg.raycastTarget = true;
-            if (!tabViewport.GetComponent<RectMask2D>()) tabViewport.gameObject.AddComponent<RectMask2D>();
+            // Clear existing children (editor play reentry)
+            for (int i = tabBar.childCount - 1; i >= 0; --i)
+                Destroy(tabBar.GetChild(i).gameObject);
 
-            // Content: left anchored, auto-size horizontally
-            tabContent.anchorMin = new Vector2(0f, 0.5f);
-            tabContent.anchorMax = new Vector2(0f, 0.5f);
-            tabContent.pivot = new Vector2(0f, 0.5f);
-            tabContent.anchoredPosition = Vector2.zero;
-
-            var hlg = tabContent.GetComponent<HorizontalLayoutGroup>() ?? tabContent.gameObject.AddComponent<HorizontalLayoutGroup>();
-            hlg.childAlignment = TextAnchor.MiddleLeft;
-            hlg.spacing = 6f;
-            hlg.childControlWidth = true;
-            hlg.childForceExpandWidth = false;
-            hlg.childControlHeight = true;
-            hlg.childForceExpandHeight = false;
-
-            var csf = tabContent.GetComponent<ContentSizeFitter>() ?? tabContent.gameObject.AddComponent<ContentSizeFitter>();
-            csf.horizontalFit = ContentSizeFitter.FitMode.PreferredSize; // expands width as tabs are added
-            csf.verticalFit = ContentSizeFitter.FitMode.Unconstrained;
-        }
-
-        void BuildTabs()
-        {
-            if (!tabContent || !tabButtonPrefab) return;
-
-            // Clear all existing (including old spacer)
-            for (int i = tabContent.childCount - 1; i >= 0; i--)
-                Destroy(tabContent.GetChild(i).gameObject);
-
+            // Create toggles
             for (int i = 0; i < tabs.Count; i++)
             {
-                var t = tabs[i];
-                var tog = Instantiate(tabButtonPrefab, tabContent);
-                tog.isOn = (i == _activeTab);
-                var label = tog.GetComponentInChildren<TMP_Text>();
-                if (label) label.text = t.label;
-                int idx = i;
-                tog.onValueChanged.AddListener(isOn => { if (isOn) SelectTab(idx); });
+                var tabModel = tabs[i];
+                var toggle = Instantiate(tabButtonPrefab, tabBar);
 
-                // right-click catcher per tab (rename + channels menu)
-                var rc = tog.gameObject.GetComponent<TabRightClickCatcher>() ?? tog.gameObject.AddComponent<TabRightClickCatcher>();
-                rc.owner = this;
-                rc.tabIndex = idx;
-            }
+                // Label
+                var label = toggle.GetComponentInChildren<TMP_Text>();
+                if (label) label.text = tabModel.label;
 
-            // spacer & catch empty-right-click
-            EnsureTabBarHitArea();
+                // Join the group
+                toggle.group = group;
 
-            // Rebuild and keep scroll valid
-            Canvas.ForceUpdateCanvases();
-            LayoutRebuilder.ForceRebuildLayoutImmediate(tabContent);
+                // Ensure raycastable
+                var graphic = toggle.targetGraphic as Graphic ?? toggle.GetComponent<Graphic>() ?? toggle.gameObject.AddComponent<Image>();
+                graphic.raycastTarget = true;
+                toggle.targetGraphic = graphic;
 
-            // if active is near end or a new tab added, keep it visible
-            ScrollToShowActiveTab();
-        }
+                // Outline for active tab
+                var outline = graphic.GetComponent<Outline>() ?? graphic.gameObject.AddComponent<Outline>();
+                outline.effectColor = new Color(1f, 1f, 1f, 0.9f);
+                outline.effectDistance = new Vector2(1f, -1f);
+                outline.enabled = false;
 
-        void EnsureTabBarHitArea()
-        {
-            if (!tabContent) return;
-
-            var hit = tabContent.Find("__TabBarHitArea");
-            if (!hit)
-            {
-                var go = new GameObject("__TabBarHitArea",
-                    typeof(RectTransform), typeof(LayoutElement), typeof(Image), typeof(TabBarRightClickCatcher));
-                var rt = (RectTransform)go.transform;
-                rt.SetParent(tabContent, false);
-                rt.SetAsLastSibling();
-
-                var le = go.GetComponent<LayoutElement>();
-                le.minWidth = 4f;
-                le.flexibleWidth = 10000f; // absorb remaining width
-
-                var img = go.GetComponent<Image>();
-                img.color = new Color(0, 0, 0, 0);
-                img.raycastTarget = true;
-
-                var rc = go.GetComponent<TabBarRightClickCatcher>();
-                rc.owner = this;
-            }
-            else
-            {
-                hit.SetAsLastSibling();
-                var le = hit.GetComponent<LayoutElement>() ?? hit.gameObject.AddComponent<LayoutElement>();
-                le.minWidth = 4f; le.flexibleWidth = 10000f;
-                var img = hit.GetComponent<Image>() ?? hit.gameObject.AddComponent<Image>();
-                img.color = new Color(0, 0, 0, 0); img.raycastTarget = true;
-                var rc = hit.GetComponent<TabBarRightClickCatcher>() ?? hit.gameObject.AddComponent<TabBarRightClickCatcher>();
-                rc.owner = this;
-            }
-        }
-
-        void AddViewportRightClickCatcher()
-        {
-            if (!tabViewport) return;
-            var img = tabViewport.GetComponent<Image>() ?? tabViewport.gameObject.AddComponent<Image>();
-            img.color = new Color(0, 0, 0, 0); img.raycastTarget = true;
-            var rc = tabViewport.GetComponent<TabBarRightClickCatcher>() ?? tabViewport.gameObject.AddComponent<TabBarRightClickCatcher>();
-            rc.owner = this;
-        }
-
-        void ScrollToShowActiveTab()
-        {
-            if (!tabScrollRect || !tabContent) return;
-
-            // If active is the last tab (typical after add), scroll to end
-            if (_activeTab >= tabs.Count - 1)
-            {
-                tabScrollRect.horizontalNormalizedPosition = 1f;
-                return;
-            }
-
-            // Otherwise, try to make sure its button is within viewport bounds
-            if (_activeTab >= 0 && _activeTab < tabContent.childCount)
-            {
-                var tr = tabContent.GetChild(_activeTab) as RectTransform;
-                if (tr)
+                int index = i;
+                toggle.onValueChanged.AddListener(isOn =>
                 {
-                    // compute positions in content space
-                    float viewLeft = tabScrollRect.content.anchoredPosition.x; // negative when scrolled
-                    float contentX = tr.anchoredPosition.x;
-                    float itemLeft = contentX;
-                    float itemRight = contentX + tr.rect.width;
-
-                    float viewWidth = tabViewport.rect.width;
-                    float viewRight = -viewLeft + viewWidth; // since anchoredPosition.x is negative for right scroll
-
-                    // If item beyond right edge, scroll right; if before left, scroll left
-                    if (itemRight > viewRight)
+                    if (isOn)
                     {
-                        float delta = itemRight - viewRight + 10f; // small padding
-                        tabScrollRect.content.anchoredPosition += new Vector2(-delta, 0f);
+                        SelectTab(index);
+                        UpdateTabOutlines();
                     }
-                    else if (itemLeft < -viewLeft)
-                    {
-                        float delta = (-viewLeft) - itemLeft + 10f;
-                        tabScrollRect.content.anchoredPosition += new Vector2(delta, 0f);
-                    }
-                }
+                });
+
+                toggle.SetIsOnWithoutNotify(i == activeTabIndex);
+
+                // Right-click support on the tab itself
+                WireRightClickHandlers(toggle, index);
+            }
+
+            UpdateTabOutlines();
+        }
+
+        private void UpdateTabOutlines()
+        {
+            if (!tabBar) return;
+
+            for (int i = 0, logical = 0; i < tabBar.childCount; i++)
+            {
+                var child = tabBar.GetChild(i);
+                var toggle = child.GetComponent<Toggle>();
+                if (!toggle) continue;
+
+                var targetGO = toggle.targetGraphic ? toggle.targetGraphic.gameObject : toggle.gameObject;
+                var outline = targetGO.GetComponent<Outline>() ?? targetGO.AddComponent<Outline>();
+                outline.effectColor = new Color(1f, 1f, 1f, 0.9f);
+                outline.effectDistance = new Vector2(1f, -1f);
+                outline.enabled = (logical == activeTabIndex);
+                logical++;
             }
         }
 
-        // ---------- Messaging ----------
-        void OnMessage(ChatMessage m)
+        private void SelectTab(int index)
         {
-            ChatChannel visibleMask = (filtersPanel != null) ? CurrentMaskFromToggles() : tabs[_activeTab].mask;
-            if ((visibleMask & m.channel) == 0) return;
+            activeTabIndex = Mathf.Clamp(index, 0, tabs.Count - 1);
 
-            AddLine(Format(m));
+            // Update optional legacy filter toggles
+            ApplyLegacyFilterToggles(tabs[activeTabIndex].channelMask);
+
+            // Refresh messages for the active tab
+            RebuildVisibleFromHistory();
+
+            // Sync UI selection quietly
+            int logical = 0;
+            for (int i = 0; i < tabBar.childCount; i++)
+            {
+                var toggle = tabBar.GetChild(i).GetComponent<Toggle>();
+                if (!toggle) continue;
+                toggle.SetIsOnWithoutNotify(logical == activeTabIndex);
+                logical++;
+            }
+
+            UpdateTabOutlines();
         }
 
-        string Format(ChatMessage m)
+        private void CycleTab(int direction)
         {
-            var t = DateTimeOffset.FromUnixTimeMilliseconds(m.unixTimeMs).ToLocalTime().DateTime;
-            string ts = timestamp24h ? t.ToString("HH:mm") : t.ToString("h:mm tt");
+            if (tabs == null || tabs.Count == 0) return;
 
-            string chanHex = ChanHex(m.channel);
-            string chan = m.channel.ToString();
+            int next = activeTabIndex + (direction >= 0 ? 1 : -1);
+            if (next < 0) next = tabs.Count - 1;
+            else if (next >= tabs.Count) next = 0;
+
+            SelectTab(next);
+        }
+
+        /// <summary>
+        /// Called by TabLeftClickCatcher to select a tab by its Toggle instance.
+        /// </summary>
+        public void SelectTabByToggle(Toggle toggle)
+        {
+            if (!toggle || !tabBar) return;
+
+            // find logical index among direct Toggle children of tabBar
+            int idx = -1, logical = 0;
+            for (int i = 0; i < tabBar.childCount; i++)
+            {
+                var childToggle = tabBar.GetChild(i).GetComponent<Toggle>();
+                if (!childToggle) continue;
+                if (childToggle == toggle) { idx = logical; break; }
+                logical++;
+            }
+            if (idx < 0) return;
+
+            // force UI state quietly
+            logical = 0;
+            for (int i = 0; i < tabBar.childCount; i++)
+            {
+                var t = tabBar.GetChild(i).GetComponent<Toggle>();
+                if (!t) continue;
+                t.SetIsOnWithoutNotify(logical == idx);
+                logical++;
+            }
+
+            SelectTab(idx);
+            UpdateTabOutlines();
+        }
+
+        // ----------------- Context Menus (invoked externally) -----------------
+
+        /// <summary>
+        /// Called by your right-click catchers. Context should be "TabBar" or "Tab".
+        /// </summary>
+        public void ShowContextMenu(string context, Vector2 screenPosition, int? tabIndexOrNull)
+        {
+            var popupLayer = EnsurePopupLayerExists(); if (!popupLayer) return;
+            var canvas = popupLayer.GetComponent<Canvas>();
+            var camera = (canvas && canvas.renderMode != RenderMode.ScreenSpaceOverlay) ? canvas.worldCamera : null;
+
+            UIContextMenu.Show(popupLayer, camera, screenPosition, menu =>
+            {
+                switch (context)
+                {
+                    case "TabBar":
+                        menu.AddButton("New Tab", () =>
+                        {
+                            tabs.Add(new Tab { label = "New Tab", channelMask = ChatChannel.All });
+                            BuildTabs();
+                            SelectTab(tabs.Count - 1);
+                        });
+                        menu.AddSeparator(1f);
+                        menu.AddCancelButton();
+                        break;
+
+                    case "Tab":
+                        if (!tabIndexOrNull.HasValue) { menu.AddCancelButton(); break; }
+                        int idx = tabIndexOrNull.Value;
+
+                        menu.AddButton("Filter…", () => ShowFilterPopup(idx, screenPosition));
+                        menu.AddButton("Rename…", () => ShowRenamePopup(idx, screenPosition));
+                        menu.AddSeparator(1f);
+                        menu.AddCancelButton();
+                        break;
+
+                    default:
+                        menu.AddCancelButton();
+                        break;
+                }
+            });
+        }
+
+        // ----------------- Filter Popup (Apply/Cancel) -----------------
+
+        private void ShowFilterPopup(int tabIndex, Vector2 screenPosition)
+        {
+            var popupLayer = EnsurePopupLayerExists(); if (!popupLayer) return;
+            var canvas = popupLayer.GetComponent<Canvas>();
+            var camera = (canvas && canvas.renderMode != RenderMode.ScreenSpaceOverlay) ? canvas.worldCamera : null;
+
+            StartPopupCursorGuard();
+
+            // Backdrop
+            var backdropGO = new GameObject("FilterBackdrop", typeof(RectTransform), typeof(Image), typeof(Button));
+            var backdrop = (RectTransform)backdropGO.transform;
+            backdrop.SetParent(popupLayer, false);
+            backdrop.SetAsLastSibling();
+            backdrop.anchorMin = Vector2.zero; backdrop.anchorMax = Vector2.one;
+            backdrop.offsetMin = Vector2.zero; backdrop.offsetMax = Vector2.zero;
+            backdropGO.GetComponent<Image>().color = new Color(0, 0, 0, 0);
+            var backdropButton = backdropGO.GetComponent<Button>();
+
+            // Panel
+            var panelGO = new GameObject("FilterPanel",
+                typeof(RectTransform),
+                typeof(Image),
+                typeof(VerticalLayoutGroup),
+                typeof(ContentSizeFitter),
+                typeof(LayoutElement));
+            var panel = (RectTransform)panelGO.transform; panel.SetParent(backdrop, false);
+            panelGO.transform.SetAsLastSibling();
+
+            var panelImage = panelGO.GetComponent<Image>();
+            panelImage.color = new Color(0.12f, 0.12f, 0.12f, 0.95f);
+
+            var vlg = panelGO.GetComponent<VerticalLayoutGroup>();
+            vlg.padding = new RectOffset(12, 12, 12, 12);
+            vlg.spacing = 10;
+            vlg.childControlWidth = true; vlg.childForceExpandWidth = true;
+            vlg.childControlHeight = true; vlg.childForceExpandHeight = false;
+
+            var fit = panelGO.GetComponent<ContentSizeFitter>();
+            fit.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+            fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            var le = panelGO.GetComponent<LayoutElement>();
+            le.minWidth = 420f; le.preferredWidth = 480f;
+
+            // Position near cursor
+            panel.pivot = new Vector2(0, 1);
+            panel.anchorMin = panel.anchorMax = new Vector2(0.5f, 0.5f);
+            RectTransformUtility.ScreenPointToLocalPointInRectangle(popupLayer, screenPosition, camera, out var local);
+            panel.anchoredPosition = local;
+
+            // Title
+            var titleGO = new GameObject("Title", typeof(RectTransform), typeof(TextMeshProUGUI));
+            var title = titleGO.GetComponent<TextMeshProUGUI>();
+            ((RectTransform)titleGO.transform).SetParent(panel, false);
+            title.text = "Filter Channels";
+            title.fontSize = 18;
+            title.alignment = TextAlignmentOptions.MidlineLeft;
+            title.color = Color.white;
+            title.raycastTarget = false;
+
+            AddSeparator(panel, 1f, new Color(1, 1, 1, 0.15f));
+
+            // ----------------- NEW: All / None quick toggles row -----------------
+            var quickRowGO = new GameObject("QuickTogglesRow", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
+            var quickRow = (RectTransform)quickRowGO.transform; quickRow.SetParent(panel, false);
+            var qhl = quickRowGO.GetComponent<HorizontalLayoutGroup>();
+            qhl.childAlignment = TextAnchor.MiddleLeft;
+            qhl.spacing = 10;
+            qhl.childControlWidth = false; qhl.childForceExpandWidth = false;
+            qhl.childControlHeight = true; qhl.childForceExpandHeight = false;
+            quickRowGO.GetComponent<LayoutElement>().minHeight = 30f;
+
+            // We'll gather the per-channel toggles to control them from All/None.
+            var channelToggles = new List<(ChatChannel ch, Toggle tg)>();
+
+            // Helper to create a small toggle that behaves like a "momentary action"
+            Toggle MakeMomentaryToggle(Transform parent, string label, Action onMomentary)
+            {
+                var go = new GameObject(label + "_Toggle", typeof(RectTransform), typeof(Toggle), typeof(Image), typeof(LayoutElement));
+                var rt = (RectTransform)go.transform; rt.SetParent(parent, false);
+
+                var bg = go.GetComponent<Image>(); bg.color = new Color(1, 1, 1, 0.05f);
+                var le2 = go.GetComponent<LayoutElement>(); le2.minWidth = 80f; le2.minHeight = 26f;
+
+                // check mark
+                var checkGO = new GameObject("Check", typeof(RectTransform), typeof(Image));
+                var check = (RectTransform)checkGO.transform; check.SetParent(rt, false);
+                check.anchorMin = new Vector2(0, 0.5f); check.anchorMax = new Vector2(0, 0.5f);
+                check.pivot = new Vector2(0, 0.5f);
+                check.anchoredPosition = new Vector2(6f, 0f);
+                check.sizeDelta = new Vector2(14f, 14f);
+                var checkImg = checkGO.GetComponent<Image>(); checkImg.color = Color.white;
+
+                // label
+                var lgo = new GameObject("Label", typeof(RectTransform), typeof(TextMeshProUGUI));
+                var lrt = (RectTransform)lgo.transform; lrt.SetParent(rt, false);
+                lrt.anchorMin = new Vector2(0, 0); lrt.anchorMax = new Vector2(1, 1);
+                lrt.offsetMin = new Vector2(24f, 0); lrt.offsetMax = new Vector2(0, 0);
+                var tmp = lgo.GetComponent<TextMeshProUGUI>();
+                tmp.text = label; tmp.fontSize = 14; tmp.alignment = TextAlignmentOptions.MidlineLeft;
+                tmp.color = Color.white; tmp.raycastTarget = false;
+
+                var t = go.GetComponent<Toggle>();
+                t.graphic = checkImg;
+                t.targetGraphic = bg;
+                var colors = t.colors;
+                colors.normalColor = new Color(1, 1, 1, 0.05f);
+                colors.highlightedColor = new Color(1, 1, 1, 0.12f);
+                colors.pressedColor = new Color(1, 1, 1, 0.18f);
+                t.colors = colors;
+                t.navigation = new Navigation { mode = Navigation.Mode.None };
+
+                t.isOn = false;
+                t.onValueChanged.AddListener(isOn =>
+                {
+                    if (!isOn) return;
+                    onMomentary?.Invoke();
+                    // reset off without triggering again
+                    t.SetIsOnWithoutNotify(false);
+                });
+
+                return t;
+            }
+
+            // We'll compute an "all singles" mask (only one-bit flags).
+            ChatChannel AllSinglesMask()
+            {
+                ChatChannel m = 0;
+                foreach (ChatChannel ch in Enum.GetValues(typeof(ChatChannel)))
+                {
+                    int v = (int)ch;
+                    if (v != 0 && (v & (v - 1)) == 0) m |= ch;
+                }
+                return m;
+            }
+
+            // Working mask for this popup
+            int idxForMask = tabIndex;
+            ChatChannel workingMask = tabs[idxForMask].channelMask;
+
+            // Create All / None action toggles (momentary)
+            var allToggle = MakeMomentaryToggle(quickRow, "All", () =>
+            {
+                // turn ON every per-channel toggle without firing per-toggle guards
+                var all = AllSinglesMask();
+                foreach (var pair in channelToggles)
+                    pair.tg.SetIsOnWithoutNotify(true);
+                workingMask = all;
+            });
+
+            var noneToggle = MakeMomentaryToggle(quickRow, "None", () =>
+            {
+                foreach (var pair in channelToggles)
+                    pair.tg.SetIsOnWithoutNotify(false);
+                workingMask = 0;
+            });
+
+            AddSeparator(panel, 1f, new Color(1, 1, 1, 0.12f));
+            // --------------------------------------------------------------------
+
+            // Grid of per-channel checkboxes (single-bit channels only)
+            var gridGO = new GameObject("ChannelsGrid",
+                typeof(RectTransform),
+                typeof(GridLayoutGroup),
+                typeof(LayoutElement));
+            var grid = (RectTransform)gridGO.transform; grid.SetParent(panel, false);
+            var glg = gridGO.GetComponent<GridLayoutGroup>();
+            glg.cellSize = new Vector2(200f, 30f);
+            glg.spacing = new Vector2(10f, 8f);
+            glg.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+            glg.constraintCount = 2;
+            gridGO.GetComponent<LayoutElement>().minWidth = 400f;
+
+            foreach (ChatChannel ch in Enum.GetValues(typeof(ChatChannel)))
+            {
+                int v = (int)ch;
+                if (v == 0 || (v & (v - 1)) != 0) continue; // single-bit only
+
+                bool initialOn = (workingMask & ch) != 0;
+
+                // Create and capture the toggle so All/None can manipulate it silently
+                var tg = MakeChannelCheckbox(grid, ch.ToString(), initialOn, (toggle, isOn) =>
+                {
+                    if (isOn)
+                    {
+                        workingMask |= ch;
+                    }
+                    else
+                    {
+                        var candidate = workingMask & ~ch;
+                        if ((int)candidate == 0)
+                        {
+                            // Must have at least one channel selected when toggling individually.
+                            // (All/None bypass this via SetIsOnWithoutNotify and direct mask edits.)
+                            toggle.isOn = true;
+                            return;
+                        }
+                        workingMask = candidate;
+                    }
+                });
+
+                channelToggles.Add((ch, tg));
+            }
+
+            AddSeparator(panel, 1f, new Color(1, 1, 1, 0.15f));
+
+            // Buttons row
+            var rowGO = new GameObject("ButtonsRow", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
+            var row = (RectTransform)rowGO.transform; row.SetParent(panel, false);
+            var hl = rowGO.GetComponent<HorizontalLayoutGroup>();
+            hl.childAlignment = TextAnchor.MiddleRight;
+            hl.spacing = 8;
+            hl.childControlWidth = false; hl.childForceExpandWidth = false;
+            hl.childControlHeight = true; hl.childForceExpandHeight = false;
+            rowGO.GetComponent<LayoutElement>().minHeight = 32f;
+
+            MakeButton(row, "Cancel", CloseWithoutApply, 96f);
+            MakeButton(row, "Apply", ApplyAndClose, 96f);
+
+            // Layout + clamp
+            Canvas.ForceUpdateCanvases();
+            LayoutRebuilder.ForceRebuildLayoutImmediate(panel);
+            ClampChildInside(panel, popupLayer, 8f);
+
+            backdropButton.onClick.AddListener(CloseWithoutApply);
+
+            // Local helpers
+            void CloseWithoutApply()
+            {
+                ClearEventSelection();
+                EndPopupCursorGuard();
+                if (backdropGO) Destroy(backdropGO);
+            }
+
+            void ApplyAndClose()
+            {
+                tabs[idxForMask].channelMask = workingMask;
+                if (idxForMask == activeTabIndex)
+                {
+                    ApplyLegacyFilterToggles(workingMask);
+                    RebuildVisibleFromHistory();
+                }
+                CloseWithoutApply();
+            }
+        }
+
+        // ----------------- Rename Popup -----------------
+
+        private void ShowRenamePopup(int tabIndex, Vector2 screenPosition)
+        {
+            var popupLayer = EnsurePopupLayerExists(); if (!popupLayer) return;
+            var canvas = popupLayer.GetComponent<Canvas>();
+            var camera = (canvas && canvas.renderMode != RenderMode.ScreenSpaceOverlay) ? canvas.worldCamera : null;
+
+            StartPopupCursorGuard();
+
+            // Backdrop
+            var backdropGO = new GameObject("RenameBackdrop", typeof(RectTransform), typeof(Image), typeof(Button));
+            var backdrop = (RectTransform)backdropGO.transform;
+            backdrop.SetParent(popupLayer, false);
+            backdrop.SetAsLastSibling();
+            backdrop.anchorMin = Vector2.zero; backdrop.anchorMax = Vector2.one;
+            backdrop.offsetMin = Vector2.zero; backdrop.offsetMax = Vector2.zero;
+            backdropGO.GetComponent<Image>().color = new Color(0, 0, 0, 0);
+            var backdropButton = backdropGO.GetComponent<Button>();
+
+            // Panel
+            var panelGO = new GameObject("RenamePanel",
+                typeof(RectTransform),
+                typeof(Image),
+                typeof(VerticalLayoutGroup),
+                typeof(ContentSizeFitter),
+                typeof(LayoutElement));
+            var panel = (RectTransform)panelGO.transform; panel.SetParent(backdrop, false);
+            panelGO.transform.SetAsLastSibling();
+
+            var panelImage = panelGO.GetComponent<Image>();
+            panelImage.color = new Color(0.12f, 0.12f, 0.12f, 0.95f);
+
+            var vlg = panelGO.GetComponent<VerticalLayoutGroup>();
+            vlg.padding = new RectOffset(10, 10, 10, 10);
+            vlg.spacing = 8;
+            vlg.childControlWidth = true; vlg.childForceExpandWidth = true;
+            vlg.childControlHeight = true; vlg.childForceExpandHeight = false;
+
+            var fit = panelGO.GetComponent<ContentSizeFitter>();
+            fit.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+            fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            var le = panelGO.GetComponent<LayoutElement>();
+            le.minWidth = 260f; le.preferredWidth = 320f;
+
+            panel.pivot = new Vector2(0, 1);
+            panel.anchorMin = panel.anchorMax = new Vector2(0.5f, 0.5f);
+            RectTransformUtility.ScreenPointToLocalPointInRectangle(popupLayer, screenPosition, camera, out var local);
+            panel.anchoredPosition = local;
+
+            // Input background
+            var inputBGGO = new GameObject("NameInputBG", typeof(RectTransform), typeof(Image), typeof(LayoutElement));
+            var inputBgrt = (RectTransform)inputBGGO.transform; inputBgrt.SetParent(panel, false);
+            inputBGGO.GetComponent<Image>().color = new Color(1, 1, 1, 0.06f);
+            var inputBGle = inputBGGO.GetComponent<LayoutElement>();
+            inputBGle.minWidth = 240f; inputBGle.preferredWidth = 280f;
+            inputBGle.minHeight = 32f; inputBGle.preferredHeight = 34f;
+
+            // Input field
+            var input = inputBGGO.AddComponent<TMP_InputField>();
+            input.characterLimit = 32;
+            input.text = tabs[tabIndex].label;
+            input.customCaretColor = true; input.caretColor = Color.white; input.caretWidth = 2; input.caretBlinkRate = 0.8f;
+            input.selectionColor = new Color(1f, 1f, 1f, 0.25f);
+#if UNITY_EDITOR || UNITY_STANDALONE
+            input.shouldHideMobileInput = true;
+#endif
+
+            // Text viewport + text + placeholder
+            var vpGO = new GameObject("Text Area", typeof(RectTransform), typeof(RectMask2D));
+            var vprt = (RectTransform)vpGO.transform; vprt.SetParent(inputBgrt, false);
+            vprt.anchorMin = new Vector2(0, 0); vprt.anchorMax = new Vector2(1, 1);
+            vprt.offsetMin = new Vector2(8, 6); vprt.offsetMax = new Vector2(-8, -6);
+
+            var textGO = new GameObject("Text", typeof(RectTransform), typeof(TextMeshProUGUI));
+            var textRT = (RectTransform)textGO.transform; textRT.SetParent(vprt, false);
+            textRT.anchorMin = Vector2.zero; textRT.anchorMax = Vector2.one; textRT.offsetMin = Vector2.zero; textRT.offsetMax = Vector2.zero;
+            var text = textGO.GetComponent<TextMeshProUGUI>();
+            text.enableWordWrapping = false; text.alignment = TextAlignmentOptions.MidlineLeft; text.fontSize = 16; text.raycastTarget = false;
+
+            var phGO = new GameObject("Placeholder", typeof(RectTransform), typeof(TextMeshProUGUI));
+            var phRT = (RectTransform)phGO.transform; phRT.SetParent(vprt, false);
+            phRT.anchorMin = Vector2.zero; phRT.anchorMax = Vector2.one; phRT.offsetMin = Vector2.zero; phRT.offsetMax = Vector2.zero;
+            var placeholder = phGO.GetComponent<TextMeshProUGUI>();
+            placeholder.text = "Tab name"; placeholder.fontSize = 16; placeholder.color = new Color(1, 1, 1, 0.35f); placeholder.raycastTarget = false;
+
+            input.textViewport = vprt;
+            input.textComponent = text;
+            input.placeholder = placeholder;
+
+            // Buttons row
+            var rowGO = new GameObject("ButtonsRow", typeof(RectTransform), typeof(HorizontalLayoutGroup), typeof(LayoutElement));
+            var row = (RectTransform)rowGO.transform; row.SetParent(panel, false);
+            var hl = rowGO.GetComponent<HorizontalLayoutGroup>();
+            hl.spacing = 8;
+            hl.childControlWidth = false; hl.childForceExpandWidth = false;
+            hl.childControlHeight = true; hl.childForceExpandHeight = false;
+            rowGO.GetComponent<LayoutElement>().minHeight = 32f;
+
+            void MakeBtn(string label, Action onClick, float minW = 88f)
+            {
+                var go = new GameObject(label, typeof(RectTransform), typeof(Image), typeof(Button), typeof(LayoutElement));
+                var rt = (RectTransform)go.transform; rt.SetParent(row, false);
+
+                go.GetComponent<Image>().color = new Color(1, 1, 1, 0.06f);
+                var le2 = go.GetComponent<LayoutElement>(); le2.minWidth = minW; le2.minHeight = 28f; le2.preferredWidth = minW;
+
+                var btn = go.GetComponent<Button>();
+                var colors = btn.colors;
+                colors.highlightedColor = new Color(1, 1, 1, 0.12f);
+                colors.pressedColor = new Color(1, 1, 1, 0.18f);
+                btn.colors = colors;
+                btn.onClick.AddListener(() => onClick?.Invoke());
+
+                var lgo = new GameObject("Label", typeof(RectTransform), typeof(TextMeshProUGUI));
+                var lrt = (RectTransform)lgo.transform; lrt.SetParent(rt, false);
+                lrt.anchorMin = Vector2.zero; lrt.anchorMax = Vector2.one; lrt.offsetMin = Vector2.zero; lrt.offsetMax = Vector2.zero;
+                var l = lgo.GetComponent<TextMeshProUGUI>();
+                l.text = label; l.fontSize = 14; l.alignment = TextAlignmentOptions.Center; l.color = Color.white; l.raycastTarget = false;
+            }
+
+            void CommitAndClose(string value)
+            {
+                string newName = string.IsNullOrWhiteSpace(value) ? tabs[tabIndex].label : value.Trim();
+                tabs[tabIndex].label = newName;
+                BuildTabs();
+                SelectTab(tabIndex);
+                Close();
+            }
+
+            void Close()
+            {
+                ClearEventSelection();
+                EndPopupCursorGuard();
+                if (backdropGO) Destroy(backdropGO);
+            }
+
+            input.onSubmit.AddListener(_ => CommitAndClose(input.text));
+            MakeBtn("Rename", () => CommitAndClose(input.text));
+            MakeBtn("Cancel", Close);
+
+            backdropButton.onClick.AddListener(Close);
+
+            Canvas.ForceUpdateCanvases();
+            LayoutRebuilder.ForceRebuildLayoutImmediate(panel);
+            ClampChildInside(panel, popupLayer, 8f);
+
+            // Ensure visible caret and focus
+            var es = EventSystem.current;
+            if (es) es.SetSelectedGameObject(input.gameObject);
+            StartCoroutine(FocusInputNextFrame(input));
+        }
+
+        // ----------------- Messages -----------------
+
+        private void HandleIncomingMessage(ChatMessage message)
+        {
+            history.Add(message);
+            if (history.Count > maxHistoryLines) history.RemoveAt(0);
+
+            if ((tabs[activeTabIndex].channelMask & message.channel) == 0) return;
+            AddVisibleLine(FormatMessage(message));
+        }
+
+        private void RebuildVisibleFromHistory()
+        {
+            // Clear visible
+            foreach (var ln in visibleLines) if (ln) Destroy(ln.gameObject);
+            visibleLines.Clear();
+
+            var mask = tabs[activeTabIndex].channelMask;
+            for (int i = history.Count - 1; i >= 0; --i)
+                if ((mask & history[i].channel) != 0)
+                    AddVisibleLine(FormatMessage(history[i]));
+
+            RefreshLayoutAndMask(true);
+            if (autoScrollToBottom && scrollRect)
+                scrollRect.verticalNormalizedPosition = BottomNormalizedPosition();
+        }
+
+        private string FormatMessage(ChatMessage message)
+        {
+            var time = DateTimeOffset.FromUnixTimeMilliseconds(message.unixTimeMs).ToLocalTime().DateTime;
+            string stamp = use24HourTimestamps ? time.ToString("HH:mm") : time.ToString("h:mm tt");
+
+            string channelHex = message.channel switch
+            {
+                ChatChannel.System => "#F3C969",
+                ChatChannel.General => "#FFFFFF",
+                ChatChannel.Say => "#A8D5FF",
+                ChatChannel.Whisper => "#C784FF",
+                ChatChannel.Party => "#63B3FF",
+                ChatChannel.Guild => "#4FE0C6",
+                ChatChannel.Trade => "#E6B95C",
+                ChatChannel.Loot => "#7EE784",
+                ChatChannel.Combat => "#FF7A7A",
+                ChatChannel.Global => "#A8B2FF",
+                _ => "#FFFFFF"
+            };
 
             var sb = new StringBuilder(256);
-
             if (showTimestamps)
-                sb.Append("<color=#6B7685>[</color>").Append(ts).Append("<color=#6B7685>]</color> ");
+                sb.Append("<color=#6B7685>[</color>").Append(stamp).Append("<color=#6B7685>]</color> ");
 
-            sb.Append("<color=").Append(chanHex).Append(">").Append("[").Append(chan).Append("]</color> ");
-            if (!string.IsNullOrEmpty(m.from))
-                sb.Append("<b>").Append(m.from).Append(":</b> ");
-            sb.Append(m.text);
+            sb.Append("<color=").Append(channelHex).Append(">").Append("[").Append(message.channel).Append("]</color> ");
+            if (!string.IsNullOrEmpty(message.from))
+                sb.Append("<b>").Append(message.from).Append(":</b> ");
+            sb.Append(message.text);
+
             return sb.ToString();
         }
 
-        static string ChanHex(ChatChannel c) => c switch
-        {
-            ChatChannel.System => "#F3C969",
-            ChatChannel.General => "#FFFFFF",
-            ChatChannel.Say => "#A8D5FF",
-            ChatChannel.Whisper => "#C784FF",
-            ChatChannel.Party => "#63B3FF",
-            ChatChannel.Guild => "#4FE0C6",
-            ChatChannel.Trade => "#E6B95C",
-            ChatChannel.Loot => "#7EE784",
-            ChatChannel.Combat => "#FF7A7A",
-            ChatChannel.Global => "#A8B2FF",
-            _ => "#FFFFFF"
-        };
-
-        // ---------- Add/remove chat lines ----------
-        void AddLine(string richText)
+        private void AddVisibleLine(string richText)
         {
             if (!linePrefab || !content) return;
 
             var line = Instantiate(linePrefab, content);
             line.Set(richText);
 
+            // Newest appears visually at bottom with reverse arrangement (index 0)
             line.transform.SetSiblingIndex(0);
-            _lines.Insert(0, line);
+            visibleLines.Insert(0, line);
 
-            while (_lines.Count > maxLines)
+            // Prune oldest
+            while (visibleLines.Count > maxVisibleLines)
             {
-                int last = _lines.Count - 1;
-                if (_lines[last]) Destroy(_lines[last].gameObject);
-                _lines.RemoveAt(last);
+                int last = visibleLines.Count - 1;
+                if (visibleLines[last]) Destroy(visibleLines[last].gameObject);
+                visibleLines.RemoveAt(last);
             }
 
-            SafeRebuildAndMaskRefresh(false);
-
-            if (autoScroll && scrollRect)
-                scrollRect.verticalNormalizedPosition = BottomNormalizedForCurrentRig();
+            RefreshLayoutAndMask(false);
+            if (autoScrollToBottom && scrollRect)
+                scrollRect.verticalNormalizedPosition = BottomNormalizedPosition();
         }
 
-        void RefreshAllVisible()
-        {
-            foreach (var ln in _lines) if (ln) Destroy(ln.gameObject);
-            _lines.Clear();
+        // ----------------- Send -----------------
 
-            SafeRebuildAndMaskRefresh(true);
-            if (autoScroll && scrollRect)
-                scrollRect.verticalNormalizedPosition = BottomNormalizedForCurrentRig();
-        }
-
-        // ---------- Input send ----------
         public void SendFromInput()
         {
             if (!inputField) return;
             string text = inputField.text;
             if (string.IsNullOrWhiteSpace(text)) return;
 
-            var channel = DropdownToChannel(channelDropdown ? channelDropdown.value : 0);
+            var channel = channelDropdown ? DropdownToChannel(channelDropdown.value) : ChatChannel.General;
 
+            // Whisper shorthand: /w name message
             if (text.StartsWith("/w ", StringComparison.OrdinalIgnoreCase) ||
                 text.StartsWith("/whisper ", StringComparison.OrdinalIgnoreCase))
             {
@@ -447,7 +902,7 @@ namespace MMO.Chat.UI
             AfterSend();
         }
 
-        ChatChannel DropdownToChannel(int idx) => idx switch
+        private ChatChannel DropdownToChannel(int index) => index switch
         {
             0 => ChatChannel.General,
             1 => ChatChannel.Say,
@@ -459,76 +914,69 @@ namespace MMO.Chat.UI
             _ => ChatChannel.General
         };
 
-        void AfterSend()
+        private void AfterSend()
         {
             inputField.text = "";
-
-            if (keepFocusAfterSend) FocusInput();
+            if (keepFocusAfterSend)
+            {
+                FocusChatInput();
+            }
             else
             {
-                _suppressEnterRefocus = true;
-                UnfocusInput();
-                StartCoroutine(ClearEnterSuppressNextFrame());
+                suppressEnterRefocus = true;
+                UnfocusChatInput();
+                StartCoroutine(ClearEnterRefocusNextFrame());
             }
         }
 
-        System.Collections.IEnumerator ClearEnterSuppressNextFrame()
+        private System.Collections.IEnumerator ClearEnterRefocusNextFrame()
         {
             yield return null;
-            _suppressEnterRefocus = false;
+            suppressEnterRefocus = false;
         }
 
-        // ---------- Focus helpers ----------
-        void FocusInput()
+        private void BuildChannelDropdown()
         {
-            if (!inputField) return;
-            var es = EventSystem.current;
-            if (!es) return;
-
-            es.SetSelectedGameObject(null);
-            StartCoroutine(FocusNextFrame());
-
-            CaptureMouseForUI();
+            if (!channelDropdown) return;
+            channelDropdown.ClearOptions();
+            channelDropdown.AddOptions(new List<string> { "General", "Say", "Party", "Guild", "Trade", "Whisper", "Global" });
+            channelDropdown.value = 0;
         }
 
-        System.Collections.IEnumerator FocusNextFrame()
+        // ----------------- Legacy Filters Panel (optional) -----------------
+
+        private void ApplyLegacyFilterToggles(ChatChannel mask)
         {
-            yield return null;
-            if (!inputField) yield break;
-            inputField.interactable = true;
-            inputField.ActivateInputField();
-            inputField.Select();
-            inputField.caretPosition = inputField.text?.Length ?? 0;
-            inputField.MoveTextEnd(false);
+            void Set(Toggle t, ChatChannel c) { if (t) t.isOn = (mask & c) != 0; }
+            Set(systemT, ChatChannel.System);
+            Set(generalT, ChatChannel.General);
+            Set(sayT, ChatChannel.Say);
+            Set(whisperT, ChatChannel.Whisper);
+            Set(partyT, ChatChannel.Party);
+            Set(guildT, ChatChannel.Guild);
+            Set(tradeT, ChatChannel.Trade);
+            Set(lootT, ChatChannel.Loot);
+            Set(combatT, ChatChannel.Combat);
+            Set(globalT, ChatChannel.Global);
+            if (legacyFiltersPanel) legacyFiltersPanel.SetActive(false); // hidden in this fresh build
         }
 
-        void UnfocusInput()
-        {
-            if (!inputField) return;
-            inputField.DeactivateInputField();
+        // ----------------- Layout & Mask -----------------
 
-            var es = EventSystem.current;
-            if (es && es.currentSelectedGameObject == inputField.gameObject)
-                es.SetSelectedGameObject(null);
-
-            RestoreMouseAfterUI();
-        }
-
-        // ---------- Chat list rig (new lines at bottom) ----------
-        void EnsureIndex0IsBottomRig()
+        private void ConfigureChatListLayout()
         {
             if (!scrollRect || !content) return;
 
-            var vp = scrollRect.viewport ? scrollRect.viewport : scrollRect.transform as RectTransform;
-            if (vp)
+            var viewport = scrollRect.viewport ? scrollRect.viewport : scrollRect.transform as RectTransform;
+            if (viewport)
             {
-                var img = vp.GetComponent<Image>() ?? vp.gameObject.AddComponent<Image>();
+                var img = viewport.GetComponent<Image>() ?? viewport.gameObject.AddComponent<Image>();
                 img.color = new Color(0, 0, 0, 0); img.raycastTarget = true;
-                if (!vp.GetComponent<RectMask2D>()) vp.gameObject.AddComponent<RectMask2D>();
-                vp.anchorMin = Vector2.zero; vp.anchorMax = Vector2.one;
-                vp.pivot = new Vector2(0.5f, 0.5f);
-                vp.anchoredPosition = Vector2.zero;
-                vp.offsetMin = vp.offsetMax = Vector2.zero;
+                if (!viewport.GetComponent<RectMask2D>()) viewport.gameObject.AddComponent<RectMask2D>();
+                viewport.anchorMin = Vector2.zero; viewport.anchorMax = Vector2.one;
+                viewport.pivot = new Vector2(0.5f, 0.5f);
+                viewport.anchoredPosition = Vector2.zero;
+                viewport.offsetMin = viewport.offsetMax = Vector2.zero;
             }
 
 #if UNITY_2019_3_OR_NEWER
@@ -547,9 +995,9 @@ namespace MMO.Chat.UI
             csf.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
             csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 #else
-            content.anchorMin = new Vector2(0f, 0f);
-            content.anchorMax = new Vector2(1f, 0f);
-            content.pivot     = new Vector2(0.5f, 1f);
+            content.anchorMin = new Vector2(0f,0f);
+            content.anchorMax = new Vector2(1f,0f);
+            content.pivot     = new Vector2(0.5f,1f);
             content.anchoredPosition = Vector2.zero;
 
             var vlg = content.GetComponent<VerticalLayoutGroup>() ?? content.gameObject.AddComponent<VerticalLayoutGroup>();
@@ -562,325 +1010,412 @@ namespace MMO.Chat.UI
 #endif
 
             scrollRect.movementType = ScrollRect.MovementType.Clamped;
-            scrollRect.horizontal = false;
-            scrollRect.vertical = true;
+            scrollRect.horizontal = false; scrollRect.vertical = true;
 
+            // Remove any legacy spacer
             for (int i = content.childCount - 1; i >= 0; i--)
                 if (content.GetChild(i).name == "__SpacerTop")
                     DestroyImmediate(content.GetChild(i).gameObject);
 
-            if (autoScroll)
-                scrollRect.verticalNormalizedPosition = BottomNormalizedForCurrentRig();
+            if (autoScrollToBottom)
+                scrollRect.verticalNormalizedPosition = BottomNormalizedPosition();
         }
 
-        float BottomNormalizedForCurrentRig()
+        private float BottomNormalizedPosition()
         {
+            // For top-pivot content (new Unity path), bottom = 0
+            // For bottom-pivot content (old Unity path), bottom = 1
             return Mathf.Approximately(content ? content.pivot.y : 1f, 1f) ? 0f : 1f;
         }
 
-        void SafeRebuildAndMaskRefresh(bool snapBottom)
+        private void RefreshLayoutAndMask(bool snapBottom)
         {
             if (!content) return;
-
             Canvas.ForceUpdateCanvases();
             LayoutRebuilder.ForceRebuildLayoutImmediate(content);
 
-            if (scrollRect)
-            {
-                var refresher = scrollRect.GetComponent<ChatScrollMaskRefresher>();
-                if (refresher) refresher.ForceClipRefresh(snapBottom);
-            }
+            var refresher = scrollRect ? scrollRect.GetComponent<ChatScrollMaskRefresher>() : null;
+            if (refresher) refresher.ForceClipRefresh(snapBottom);
         }
 
-        // Mouse control helpers
-        void CaptureMouseForUI()
-        {
-            if (_cursorManagedThisFocus || !manageCursorWhenFocused) return;
+        // ----------------- Cursor / Focus Helpers -----------------
 
-            _prevLockMode = Cursor.lockState;
-            _prevCursorVisible = Cursor.visible;
+        private void FocusChatInput()
+        {
+            if (!inputField) return;
+            var es = EventSystem.current; if (!es) return;
+
+            es.SetSelectedGameObject(null);
+            StartCoroutine(FocusInputNextFrame(inputField));
+            CaptureMouseForChat();
+        }
+
+        private System.Collections.IEnumerator FocusInputNextFrame(TMP_InputField field)
+        {
+            yield return null;
+            if (!field) yield break;
+
+            field.interactable = true;
+            field.ActivateInputField();
+            field.Select();
+            field.caretPosition = field.text?.Length ?? 0;
+            field.MoveTextEnd(false);
+            field.ForceLabelUpdate();
+        }
+
+        private void UnfocusChatInput()
+        {
+            if (!inputField) return;
+            inputField.DeactivateInputField();
+
+            var es = EventSystem.current;
+            if (es && es.currentSelectedGameObject == inputField.gameObject)
+                es.SetSelectedGameObject(null);
+
+            RestoreMouseAfterChat();
+        }
+
+        private void CaptureMouseForChat()
+        {
+            if (cursorManagedThisFocus || !manageCursorWhenChatFocused) return;
+
+            cachedLockMode = Cursor.lockState;
+            cachedCursorVisible = Cursor.visible;
 
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
-            _cursorManagedThisFocus = true;
+            cursorManagedThisFocus = true;
 
-            if (disableWhileFocused != null)
-                foreach (var b in disableWhileFocused) if (b) b.enabled = false;
+            if (disableWhileChatFocused != null)
+                foreach (var b in disableWhileChatFocused) if (b) b.enabled = false;
 
             OnChatFocusChanged?.Invoke(true);
         }
 
-        void RestoreMouseAfterUI()
+        private void RestoreMouseAfterChat()
         {
-            if (!_cursorManagedThisFocus || !manageCursorWhenFocused) return;
+            if (!cursorManagedThisFocus || !manageCursorWhenChatFocused) return;
 
-            Cursor.lockState = _prevLockMode;
-            Cursor.visible = _prevCursorVisible;
-            _cursorManagedThisFocus = false;
+            Cursor.lockState = cachedLockMode;
+            Cursor.visible = cachedCursorVisible;
+            cursorManagedThisFocus = false;
 
-            if (disableWhileFocused != null)
-                foreach (var b in disableWhileFocused) if (b) b.enabled = true;
+            if (disableWhileChatFocused != null)
+                foreach (var b in disableWhileChatFocused) if (b) b.enabled = true;
 
             OnChatFocusChanged?.Invoke(false);
         }
 
-        public void SetShowTimestamps(bool on) { showTimestamps = on; }
-        public void ToggleFiltersPanel() { if (filtersPanel) filtersPanel.SetActive(!filtersPanel.activeSelf); }
-        public void OnFilterChanged() { /* filtering only affects new lines in this MVP */ }
-
-        // =========================
-        // Context menus & tab editing
-        // =========================
-
-        // Right-click on TAB BAR background → add new tab (+ Cancel)
-        public void ShowTabBarMenu(Vector2 screenPos)
+        private void StartPopupCursorGuard()
         {
-            var overlay = GetOverlayRoot(); if (!overlay) return;
-            var canvas = overlay.GetComponentInParent<Canvas>();
-            var cam = (canvas && canvas.renderMode != RenderMode.ScreenSpaceOverlay) ? canvas.worldCamera : null;
+            popupPrevLock = Cursor.lockState;
+            popupPrevVisible = Cursor.visible;
 
-            UIContextMenu.Show(overlay, cam, screenPos, menu =>
-            {
-                menu.AddButton("Add New Tab", () =>
-                {
-                    tabs.Add(new Tab { label = "New Tab", mask = ChatChannel.All });
-                    BuildTabs();
-                    SelectTab(tabs.Count - 1);
-                    ScrollToShowActiveTab();
-                });
+            popupCursorForce = true;
+            if (popupCursorRoutine == null)
+                popupCursorRoutine = StartCoroutine(PopupCursorKeepVisible());
 
-                menu.AddCancelButton();
-            });
+            if (disableWhileChatFocused != null)
+                foreach (var b in disableWhileChatFocused) if (b) b.enabled = false;
+
+            OnChatFocusChanged?.Invoke(true);
         }
 
-        // Right-click a TAB → rename + choose channels (+ Cancel)
-        public void ShowTabMenu(int tabIndex, Vector2 screenPos)
+        private void EndPopupCursorGuard()
         {
-            var overlay = GetOverlayRoot(); if (!overlay) return;
-            var canvas = overlay.GetComponentInParent<Canvas>();
-            var cam = (canvas && canvas.renderMode != RenderMode.ScreenSpaceOverlay) ? canvas.worldCamera : null;
-
-            int idx = tabIndex;
-            Vector2 sp = screenPos;
-
-            UIContextMenu.Show(overlay, cam, sp, menu =>
+            popupCursorForce = false;
+            if (popupCursorRoutine != null)
             {
-                menu.AddButton("Rename…", () =>
+                StopCoroutine(popupCursorRoutine);
+                popupCursorRoutine = null;
+            }
+
+            Cursor.lockState = popupPrevLock;
+            Cursor.visible = popupPrevVisible;
+
+            if (disableWhileChatFocused != null)
+                foreach (var b in disableWhileChatFocused) if (b) b.enabled = true;
+
+            OnChatFocusChanged?.Invoke(false);
+        }
+
+        // Back-compat wrapper in case anything still calls StopPopupCursorGuard
+        private void StopPopupCursorGuard() => EndPopupCursorGuard();
+
+        private System.Collections.IEnumerator PopupCursorKeepVisible()
+        {
+            while (popupCursorForce)
+            {
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+                yield return new WaitForEndOfFrame();
+            }
+        }
+
+        private void ClearEventSelection()
+        {
+            var es = EventSystem.current;
+            if (es && es.currentSelectedGameObject) es.SetSelectedGameObject(null);
+        }
+
+        // ----------------- Popup Layer -----------------
+
+        private RectTransform EnsurePopupLayerExists()
+        {
+            if (popupRootOverride)
+            {
+                var c = popupRootOverride.GetComponent<Canvas>();
+                if (!c)
                 {
-                    ShowInlineRenamePopup(idx, sp);
-                });
-
-                menu.AddSeparator(1f);
-
-                foreach (ChatChannel c in Enum.GetValues(typeof(ChatChannel)))
-                {
-                    int v = (int)c;
-                    if (v == 0 || (v & (v - 1)) != 0) continue;
-
-                    bool on = (tabs[idx].mask & c) != 0;
-                    menu.AddToggle(c.ToString(), on, toggled =>
+                    var child = popupRootOverride.Find("__PopupLayer") as RectTransform;
+                    if (!child)
                     {
-                        var m = tabs[idx].mask;
-                        if (toggled) m |= c; else m &= ~c;
-                        if ((int)m == 0) m |= c; // keep at least one channel
-                        tabs[idx].mask = m;
-                        if (idx == _activeTab) SelectTab(_activeTab);
-                    });
+                        var go = new GameObject("__PopupLayer", typeof(RectTransform), typeof(Canvas), typeof(GraphicRaycaster));
+                        child = (RectTransform)go.transform;
+                        child.SetParent(popupRootOverride, false);
+                        child.anchorMin = Vector2.zero; child.anchorMax = Vector2.one;
+                        child.offsetMin = Vector2.zero; child.offsetMax = Vector2.zero;
+                    }
+                    ConfigurePopupCanvas(child.GetComponent<Canvas>());
+                    child.SetAsLastSibling();
+                    return child;
                 }
-
-                menu.AddCancelButton();
-            });
-        }
-
-        // ---------- Inline rename popup (simple, no extra prefab needed) ----------
-        void ShowInlineRenamePopup(int tabIndex, Vector2 screenPos)
-        {
-            CloseInlinePopup();
-
-            var overlay = GetOverlayRoot(); if (!overlay) return;
-            var canvas = overlay.GetComponentInParent<Canvas>();
-            var cam = (canvas && canvas.renderMode != RenderMode.ScreenSpaceOverlay) ? canvas.worldCamera : null;
-
-            // Backdrop
-            var backdropGO = new GameObject("RenameBackdrop", typeof(RectTransform), typeof(Image), typeof(Button));
-            var backdrop = (RectTransform)backdropGO.transform;
-            backdrop.SetParent(overlay, false);
-            backdrop.anchorMin = Vector2.zero; backdrop.anchorMax = Vector2.one;
-            backdrop.offsetMin = Vector2.zero; backdrop.offsetMax = Vector2.zero;
-            var bdImg = backdropGO.GetComponent<Image>(); bdImg.color = new Color(0, 0, 0, 0);
-            backdropGO.GetComponent<Button>().onClick.AddListener(CloseInlinePopup);
-
-            // Panel
-            var panelGO = new GameObject("RenamePanel", typeof(RectTransform), typeof(Image), typeof(VerticalLayoutGroup), typeof(ContentSizeFitter));
-            var panel = (RectTransform)panelGO.transform; panel.SetParent(backdrop, false);
-            var pImg = panelGO.GetComponent<Image>(); pImg.color = new Color(0.12f, 0.12f, 0.12f, 0.95f);
-            var vlg = panelGO.GetComponent<VerticalLayoutGroup>();
-            vlg.padding = new RectOffset(8, 8, 8, 8); vlg.spacing = 6;
-            vlg.childForceExpandWidth = true; vlg.childForceExpandHeight = false;
-            var fit = panelGO.GetComponent<ContentSizeFitter>();
-            fit.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
-            fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-
-            // Position near cursor
-            panel.pivot = new Vector2(0, 1);
-            panel.anchorMin = panel.anchorMax = new Vector2(0.5f, 0.5f);
-            RectTransformUtility.ScreenPointToLocalPointInRectangle(overlay, screenPos, cam, out var local);
-            panel.anchoredPosition = local;
-
-            // Input row
-            var inputBG = new GameObject("NameInputBG", typeof(RectTransform), typeof(Image));
-            var inputBGRT = (RectTransform)inputBG.transform; inputBGRT.SetParent(panel, false);
-            var ibg = inputBG.GetComponent<Image>(); ibg.color = new Color(1, 1, 1, 0.06f);
-
-            var input = inputBG.AddComponent<TMP_InputField>();
-            input.characterLimit = 32;
-            input.text = tabs[tabIndex].label;
-
-            // viewport
-            var vp = new GameObject("Text Area", typeof(RectTransform), typeof(RectMask2D));
-            var vprt = (RectTransform)vp.transform; vprt.SetParent(inputBGRT, false);
-            vprt.anchorMin = new Vector2(0, 0); vprt.anchorMax = new Vector2(1, 1);
-            vprt.offsetMin = new Vector2(6, 4); vprt.offsetMax = new Vector2(-6, -4);
-
-            // text
-            var textGO = new GameObject("Text", typeof(RectTransform), typeof(TextMeshProUGUI));
-            var trt = (RectTransform)textGO.transform; trt.SetParent(vprt, false);
-            var txt = textGO.GetComponent<TextMeshProUGUI>();
-            txt.enableWordWrapping = false; txt.alignment = TextAlignmentOptions.MidlineLeft; txt.fontSize = 14;
-            input.textViewport = vprt;
-            input.textComponent = txt;
-            input.caretWidth = 2;
-
-            // placeholder
-            var phGO = new GameObject("Placeholder", typeof(RectTransform), typeof(TextMeshProUGUI));
-            var prt = (RectTransform)phGO.transform; prt.SetParent(vprt, false);
-            var ph = phGO.GetComponent<TextMeshProUGUI>();
-            ph.text = "Tab name"; ph.fontSize = 14; ph.color = new Color(1, 1, 1, 0.35f);
-            input.placeholder = ph;
-
-            // Buttons row
-            var btnRowGO = new GameObject("ButtonsRow", typeof(RectTransform), typeof(HorizontalLayoutGroup));
-            var btnRow = (RectTransform)btnRowGO.transform; btnRow.SetParent(panel, false);
-            var hl = btnRowGO.GetComponent<HorizontalLayoutGroup>(); hl.spacing = 6; hl.childForceExpandWidth = false;
-
-            void MakeBtn(string name, Action onClick)
-            {
-                var go = new GameObject(name, typeof(RectTransform), typeof(Image), typeof(Button));
-                var rt = (RectTransform)go.transform; rt.SetParent(btnRow, false);
-                var img = go.GetComponent<Image>(); img.color = new Color(1, 1, 1, 0.06f);
-                var b = go.GetComponent<Button>();
-                var colors = b.colors; colors.highlightedColor = new Color(1, 1, 1, 0.12f); colors.pressedColor = new Color(1, 1, 1, 0.18f);
-                b.colors = colors;
-                b.onClick.AddListener(() => onClick?.Invoke());
-
-                var lgo = new GameObject("Label", typeof(RectTransform), typeof(TextMeshProUGUI));
-                var lrt = (RectTransform)lgo.transform; lrt.SetParent(rt, false);
-                var l = lgo.GetComponent<TextMeshProUGUI>(); l.text = name; l.fontSize = 14; l.color = Color.white; l.raycastTarget = false;
+                else
+                {
+                    ConfigurePopupCanvas(c);
+                    popupRootOverride.SetAsLastSibling();
+                    return popupRootOverride;
+                }
             }
 
-            void Commit(string val)
+            var rootCanvas = GetComponentInParent<Canvas>()?.rootCanvas;
+            if (!rootCanvas) return null;
+
+            var parentRT = (RectTransform)rootCanvas.transform;
+            var existing = parentRT.Find("__PopupLayer") as RectTransform;
+            if (existing)
             {
-                var newName = string.IsNullOrWhiteSpace(val) ? tabs[tabIndex].label : val.Trim();
-                tabs[tabIndex].label = newName;
-                BuildTabs();
-                SelectTab(tabIndex);
-                ScrollToShowActiveTab();
-                CloseInlinePopup();
+                var c2 = existing.GetComponent<Canvas>() ?? existing.gameObject.AddComponent<Canvas>();
+                ConfigurePopupCanvas(c2);
+                if (!existing.GetComponent<GraphicRaycaster>()) existing.gameObject.AddComponent<GraphicRaycaster>();
+                existing.SetAsLastSibling();
+                return existing;
             }
-
-            MakeBtn("Rename", () => Commit(input.text));
-            MakeBtn("Cancel", CloseInlinePopup);
-
-            Canvas.ForceUpdateCanvases();
-            LayoutRebuilder.ForceRebuildLayoutImmediate(panel);
-            ClampRectInsideParent(panel, overlay, 8f);
-
-            _openPopupGO = backdropGO;
-        }
-
-        void CloseInlinePopup()
-        {
-            if (_openPopupGO)
+            else
             {
-                Destroy(_openPopupGO);
-                _openPopupGO = null;
+                var go = new GameObject("__PopupLayer", typeof(RectTransform), typeof(Canvas), typeof(GraphicRaycaster));
+                var rt = (RectTransform)go.transform;
+                rt.SetParent(parentRT, false);
+                rt.anchorMin = Vector2.zero; rt.anchorMax = Vector2.one;
+                rt.offsetMin = Vector2.zero; rt.offsetMax = Vector2.zero;
+                var c3 = go.GetComponent<Canvas>();
+                ConfigurePopupCanvas(c3);
+                rt.SetAsLastSibling();
+                return rt;
             }
         }
 
-        RectTransform GetOverlayRoot()
+        private void ConfigurePopupCanvas(Canvas canvas)
         {
-            if (menuRootOverride) return menuRootOverride;
-            var canvas = GetComponentInParent<Canvas>();
-            if (!canvas) return null;
-            var root = canvas.rootCanvas;
-            return root ? (RectTransform)root.transform : (RectTransform)canvas.transform;
+            var root = GetComponentInParent<Canvas>()?.rootCanvas;
+            if (root)
+            {
+                canvas.renderMode = root.renderMode;
+                canvas.worldCamera = root.worldCamera;
+                canvas.planeDistance = root.planeDistance;
+            }
+            canvas.overrideSorting = true;
+            canvas.sortingOrder = popupSortingOrder;
+            canvas.additionalShaderChannels |= AdditionalCanvasShaderChannels.TexCoord1;
         }
 
-        void ClampRectInsideParent(RectTransform child, RectTransform parent, float padding)
+        // ----------------- Small UI Helpers -----------------
+
+        private void AddSeparator(Transform parent, float height, Color color)
         {
-            var p = parent.rect;
+            var go = new GameObject("Separator", typeof(RectTransform), typeof(Image), typeof(LayoutElement));
+            var rt = (RectTransform)go.transform; rt.SetParent(parent, false);
+            var img = go.GetComponent<Image>(); img.color = color;
+            var le = go.GetComponent<LayoutElement>(); le.minHeight = height; le.preferredHeight = height;
+        }
+
+        private void MakeButton(Transform parent, string label, Action onClick, float minWidth)
+        {
+            var go = new GameObject(label, typeof(RectTransform), typeof(Image), typeof(Button), typeof(LayoutElement));
+            var rt = (RectTransform)go.transform; rt.SetParent(parent, false);
+
+            go.GetComponent<Image>().color = new Color(1, 1, 1, 0.06f);
+            var le = go.GetComponent<LayoutElement>(); le.minWidth = minWidth; le.minHeight = 28f; le.preferredWidth = minWidth;
+
+            var btn = go.GetComponent<Button>();
+            var colors = btn.colors;
+            colors.highlightedColor = new Color(1, 1, 1, 0.12f);
+            colors.pressedColor = new Color(1, 1, 1, 0.18f);
+            btn.colors = colors;
+            btn.onClick.AddListener(() => onClick?.Invoke());
+
+            var lgo = new GameObject("Label", typeof(RectTransform), typeof(TextMeshProUGUI));
+            var lrt = (RectTransform)lgo.transform; lrt.SetParent(rt, false);
+            lrt.anchorMin = Vector2.zero; lrt.anchorMax = Vector2.one; lrt.offsetMin = Vector2.zero; lrt.offsetMax = Vector2.zero;
+            var l = lgo.GetComponent<TextMeshProUGUI>();
+            l.text = label; l.fontSize = 14; l.alignment = TextAlignmentOptions.Center; l.color = Color.white; l.raycastTarget = false;
+        }
+
+        private Toggle MakeChannelCheckbox(Transform parent, string label, bool isOn, Action<Toggle, bool> onChanged)
+        {
+            var go = new GameObject("T_" + label, typeof(RectTransform), typeof(Toggle), typeof(Image), typeof(LayoutElement));
+            var rt = (RectTransform)go.transform; rt.SetParent(parent, false);
+
+            var rowBg = go.GetComponent<Image>();
+            rowBg.color = new Color(1, 1, 1, 0.03f);
+
+            var le = go.GetComponent<LayoutElement>();
+            le.minWidth = 180f; le.minHeight = 28f;
+
+            // Checkbox frame
+            var boxGO = new GameObject("Box", typeof(RectTransform), typeof(Image));
+            var box = (RectTransform)boxGO.transform; box.SetParent(rt, false);
+            box.anchorMin = new Vector2(0, 0.5f); box.anchorMax = new Vector2(0, 0.5f);
+            box.pivot = new Vector2(0, 0.5f);
+            box.anchoredPosition = new Vector2(8f, 0f);
+            box.sizeDelta = new Vector2(18f, 18f);
+            boxGO.GetComponent<Image>().color = new Color(1, 1, 1, 0.22f);
+
+            // Check fill
+            var checkGO = new GameObject("Check", typeof(RectTransform), typeof(Image));
+            var check = (RectTransform)checkGO.transform; check.SetParent(box, false);
+            check.anchorMin = new Vector2(0.5f, 0.5f); check.anchorMax = new Vector2(0.5f, 0.5f);
+            check.pivot = new Vector2(0.5f, 0.5f);
+            check.anchoredPosition = Vector2.zero;
+            check.sizeDelta = new Vector2(12f, 12f);
+            var checkImg = checkGO.GetComponent<Image>();
+            checkImg.color = Color.white;
+
+            // Label
+            var lgo = new GameObject("Label", typeof(RectTransform), typeof(TextMeshProUGUI));
+            var lrt = (RectTransform)lgo.transform; lrt.SetParent(rt, false);
+            lrt.anchorMin = new Vector2(0, 0); lrt.anchorMax = new Vector2(1, 1);
+            lrt.offsetMin = new Vector2(32f, 0); lrt.offsetMax = new Vector2(0, 0);
+            var tmp = lgo.GetComponent<TextMeshProUGUI>();
+            tmp.text = label; tmp.fontSize = 15; tmp.alignment = TextAlignmentOptions.MidlineLeft;
+            tmp.color = Color.white; tmp.raycastTarget = false;
+
+            var toggle = go.GetComponent<Toggle>();
+            toggle.graphic = checkImg;
+            toggle.targetGraphic = rowBg;
+
+            var colors = toggle.colors;
+            colors.normalColor = new Color(1, 1, 1, 0.03f);
+            colors.highlightedColor = new Color(1, 1, 1, 0.08f);
+            colors.pressedColor = new Color(1, 1, 1, 0.12f);
+            colors.selectedColor = colors.highlightedColor;
+            toggle.colors = colors;
+            toggle.navigation = new Navigation { mode = Navigation.Mode.None };
+
+            toggle.isOn = isOn;
+            toggle.onValueChanged.AddListener(v => onChanged?.Invoke(toggle, v));
+            return toggle;
+        }
+
+        private void ClampChildInside(RectTransform child, RectTransform parent, float padding)
+        {
+            var pr = parent.rect;
             var size = child.rect.size;
             var pos = child.anchoredPosition;
             var pivot = child.pivot;
 
-            float minX = p.xMin + padding + pivot.x * size.x;
-            float maxX = p.xMax - padding - (1f - pivot.x) * size.x;
-            float minY = p.yMin + padding + pivot.y * size.y;
-            float maxY = p.yMax - padding - (1f - pivot.y) * size.y;
+            float minX = pr.xMin + padding + pivot.x * size.x;
+            float maxX = pr.xMax - padding - (1f - pivot.x) * size.x;
+            float minY = pr.yMin + padding + pivot.y * size.y;
+            float maxY = pr.yMax - padding - (1f - pivot.y) * size.y;
 
             pos.x = Mathf.Clamp(pos.x, minX, maxX);
             pos.y = Mathf.Clamp(pos.y, minY, maxY);
             child.anchoredPosition = pos;
         }
 
-        // ---------- Filters / channels ----------
-        void BuildChannelDropdown()
+        // --------------- Right-click wiring for tab toggles ---------------
+
+        // Attach TabRightClickCatcher if available; otherwise add an EventTrigger fallback.
+        private void WireRightClickHandlers(Toggle toggle, int tabIndex)
         {
-            if (!channelDropdown) return;
-            channelDropdown.ClearOptions();
-            channelDropdown.AddOptions(new List<string>{
-                "General","Say","Party","Guild","Trade","Whisper","Global"
+            if (!toggle) return;
+
+            // Try to use your existing TabRightClickCatcher
+            var catcherType = Type.GetType("MMO.Chat.UI.TabRightClickCatcher, Assembly-CSharp", throwOnError: false);
+            if (catcherType != null)
+            {
+                var comp = toggle.GetComponent(catcherType) ?? toggle.gameObject.AddComponent(catcherType);
+
+                // Best-effort: set ChatWindow/Toggle refs and tab index by reflection
+                TryAssignRefByType(comp, typeof(ChatWindow), this);
+                TryAssignRefByType(comp, typeof(Toggle), toggle);
+                TryAssignIntByCommonNames(comp, tabIndex, "tabIndex", "index", "Idx", "TabIndex");
+                return;
+            }
+
+            // Fallback: EventTrigger -> right-click opens the "Tab" menu for this toggle
+            var trigger = toggle.gameObject.GetComponent<EventTrigger>() ?? toggle.gameObject.AddComponent<EventTrigger>();
+
+            // Remove any existing PointerClick entries we might have added before (defensive)
+            trigger.triggers.RemoveAll(e => e != null && e.eventID == EventTriggerType.PointerClick);
+
+            var entry = new EventTrigger.Entry { eventID = EventTriggerType.PointerClick };
+            entry.callback.AddListener((BaseEventData bed) =>
+            {
+                var ped = bed as PointerEventData;
+                if (ped != null && ped.button == PointerEventData.InputButton.Right)
+                {
+                    // compute logical index among Toggle children
+                    int logical = 0, idx = -1;
+                    for (int i = 0; i < tabBar.childCount; i++)
+                    {
+                        var t = tabBar.GetChild(i).GetComponent<Toggle>();
+                        if (!t) continue;
+                        if (t == toggle) { idx = logical; break; }
+                        logical++;
+                    }
+                    if (idx >= 0) ShowContextMenu("Tab", ped.position, idx);
+                }
             });
-            channelDropdown.value = 0;
+            trigger.triggers.Add(entry);
         }
 
-        void ApplyFilterToggles(ChatChannel mask)
+        private static void TryAssignRefByType(object targetComponent, Type refType, object value)
         {
-            void Set(Toggle t, ChatChannel c) { if (t) t.isOn = (mask & c) != 0; }
-            Set(systemT, ChatChannel.System);
-            Set(generalT, ChatChannel.General);
-            Set(sayT, ChatChannel.Say);
-            Set(whisperT, ChatChannel.Whisper);
-            Set(partyT, ChatChannel.Party);
-            Set(guildT, ChatChannel.Guild);
-            Set(tradeT, ChatChannel.Trade);
-            Set(lootT, ChatChannel.Loot);
-            Set(combatT, ChatChannel.Combat);
-            Set(globalT, ChatChannel.Global);
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = targetComponent.GetType();
+
+            // fields
+            foreach (var f in t.GetFields(BF))
+                if (refType.IsAssignableFrom(f.FieldType))
+                {
+                    f.SetValue(targetComponent, value);
+                    return;
+                }
+
+            // properties
+            foreach (var p in t.GetProperties(BF))
+                if (p.CanWrite && refType.IsAssignableFrom(p.PropertyType))
+                {
+                    p.SetValue(targetComponent, value);
+                    return;
+                }
         }
 
-        ChatChannel CurrentMaskFromToggles()
+        private static void TryAssignIntByCommonNames(object targetComponent, int value, params string[] names)
         {
-            ChatChannel m = 0;
-            void AddIf(Toggle t, ChatChannel c) { if (t && t.isOn) m |= c; }
-            AddIf(systemT, ChatChannel.System);
-            AddIf(generalT, ChatChannel.General);
-            AddIf(sayT, ChatChannel.Say);
-            AddIf(whisperT, ChatChannel.Whisper);
-            AddIf(partyT, ChatChannel.Party);
-            AddIf(guildT, ChatChannel.Guild);
-            AddIf(tradeT, ChatChannel.Trade);
-            AddIf(lootT, ChatChannel.Loot);
-            AddIf(combatT, ChatChannel.Combat);
-            AddIf(globalT, ChatChannel.Global);
-            return m;
-        }
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = targetComponent.GetType();
 
-        void SelectTab(int idx)
-        {
-            _activeTab = Mathf.Clamp(idx, 0, tabs.Count - 1);
-            ApplyFilterToggles(tabs[_activeTab].mask);
-            RefreshAllVisible();
+            foreach (var n in names)
+            {
+                var f = t.GetField(n, BF);
+                if (f != null && (f.FieldType == typeof(int))) { f.SetValue(targetComponent, value); return; }
+
+                var p = t.GetProperty(n, BF);
+                if (p != null && p.CanWrite && (p.PropertyType == typeof(int))) { p.SetValue(targetComponent, value); return; }
+            }
         }
     }
 }
