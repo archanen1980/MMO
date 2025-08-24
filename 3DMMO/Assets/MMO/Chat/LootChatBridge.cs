@@ -26,8 +26,8 @@ namespace MMO.Chat
             string linkStyledName = $"<link=\"item:{itemId}\"><color=#68C1FF><u><b>{safeName}</b></u></color></link>";
 
             string text = amount > 1
-                ? $"You have received {linkStyledName} x{amount}."
-                : $"You have received {linkStyledName}.";
+                ? $"You have received a {linkStyledName} x{amount}."
+                : $"You have received a {linkStyledName}.";
 
             if (TryRaiseLocal(ChatChannel.Loot, text)) return;
 

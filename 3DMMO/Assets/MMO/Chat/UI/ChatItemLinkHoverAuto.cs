@@ -3,6 +3,7 @@
 // - Works even if a parent (e.g., ScrollRect viewport) consumes pointer events.
 // - Logs entire message on hover and logs when hovering item links.
 // - Shows ItemTooltipCursor ONLY while the pointer is over the item link.
+// - Uses ItemTooltipComposer so chat & inventory share IDENTICAL tooltip content.
 
 using System;
 using System.Text;
@@ -11,7 +12,7 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
-using MMO.Inventory.UI; // ItemTooltipCursor
+using MMO.Inventory.UI;      // ItemTooltipCursor, ItemTooltipComposer
 
 namespace MMO.Chat.UI
 {
@@ -19,18 +20,16 @@ namespace MMO.Chat.UI
     [RequireComponent(typeof(TextMeshProUGUI))]
     public class ChatItemLinkHoverAuto : MonoBehaviour
     {
-        [Header("ItemDef Lookup (for tooltip payload)")]
+        [Header("Lookup / Resources")]
+        [Tooltip("Optional lookup script (supports TryGetById / GetByIdOrNull).")]
+        [SerializeField] private UnityEngine.Object itemLookup;
         [Tooltip("Folder under Resources/ that contains ItemDef assets.")]
         [SerializeField] private string resourcesItemsFolder = "Items";
 
         [Header("Hover Logging")]
-        [Tooltip("Log when hovering ANY chat line (once per enter by default).")]
         [SerializeField] private bool logOnHoverMessage = true;
-        [Tooltip("If true, logs every frame while hovering (spammy).")]
         [SerializeField] private bool logEveryFrameWhileHover = false;
-        [Tooltip("Include raw rich-text in hover logs.")]
         [SerializeField] private bool logRawRichText = true;
-        [Tooltip("Include visible (tag-stripped) text in hover logs.")]
         [SerializeField] private bool logVisibleText = true;
 
         [Header("Link Logging")]
@@ -123,11 +122,10 @@ namespace MMO.Chat.UI
 
             if (linkIndex == -1)
             {
-                // not over any link: clear state AND hide tooltip immediately
                 if (_currentLinkIndex != -1 && logItemLinkHover)
                     Debug.Log("[ChatItemLinkHoverAuto] Exit link.");
                 ClearItemLinkHover();
-                SafeHideTooltip(); // <-- critical fix so tooltip doesn't persist while inside the message
+                SafeHideTooltip();
                 return;
             }
 
@@ -141,7 +139,7 @@ namespace MMO.Chat.UI
                 if (linkId.StartsWith("item:", StringComparison.OrdinalIgnoreCase))
                 {
                     _currentItemId = linkId.Substring("item:".Length);
-                    _currentPayload = BuildPayload(_currentItemId);
+                    _currentPayload = ItemTooltipComposer.Build(_currentItemId, itemLookup, resourcesItemsFolder); // unified
 
                     if (logItemLinkHover && (_lastLoggedLinkIndex != linkIndex || _lastLoggedItemId != _currentItemId))
                     {
@@ -161,7 +159,6 @@ namespace MMO.Chat.UI
                     SafeHideTooltip();
                 }
             }
-            // else: still over same link; ItemTooltipCursor follows cursor in LateUpdate
         }
 
         private void ClearItemLinkHover()
@@ -240,115 +237,11 @@ namespace MMO.Chat.UI
             s_sb.Length = 0;
             var arr = ti.characterInfo;
             for (int i = 0; i < arr.Length; i++)
-            {
                 if (arr[i].isVisible) s_sb.Append(arr[i].character);
-            }
             return s_sb.ToString();
         }
 
-        // ---------- Tooltip payload building ----------
-
-        private ItemTooltipCursor.Payload BuildPayload(string itemId)
-        {
-            var p = new ItemTooltipCursor.Payload { Icon = null, Title = itemId, Body = string.Empty };
-
-            var def = ResolveItemDef(itemId);
-            if (def == null) return p;
-
-            p.Icon = GetSprite(def, "icon", "Icon", "sprite", "Sprite");
-            p.Title = GetString(def, "displayName", "DisplayName", "title", "Title", "name") ?? itemId;
-            p.Body = GetString(def, "description", "Description", "body", "Body", "tooltip", "Tooltip")
-                      ?? TryInvokeString(def, "GetTooltip", "BuildTooltip", "GetDescription", "ToTooltip");
-
-            return p;
-        }
-
-        private UnityEngine.Object ResolveItemDef(string itemId)
-        {
-            var itemDefType = Type.GetType("MMO.Shared.Item.ItemDef, Assembly-CSharp", throwOnError: false);
-            if (itemDefType == null) return null;
-
-            var direct = Resources.Load($"{resourcesItemsFolder}/{itemId}", itemDefType);
-            if (direct) return direct;
-
-            var all = Resources.LoadAll(resourcesItemsFolder, itemDefType);
-            if (all != null)
-            {
-                foreach (var o in all)
-                {
-                    string id = GetString(o, "itemId", "ItemId", "id", "Id", "itemID", "ItemID") ?? o.name;
-                    if (!string.IsNullOrEmpty(id) && string.Equals(id, itemId, StringComparison.OrdinalIgnoreCase))
-                        return o;
-                }
-            }
-            return null;
-        }
-
-        private static string GetString(object obj, params string[] names)
-        {
-            if (obj == null) return null;
-            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            var t = obj.GetType();
-
-            foreach (var n in names)
-            {
-                var p = t.GetProperty(n, BF);
-                if (p != null && p.PropertyType == typeof(string))
-                {
-                    var v = p.GetValue(obj) as string;
-                    if (!string.IsNullOrEmpty(v)) return v;
-                }
-                var f = t.GetField(n, BF);
-                if (f != null && f.FieldType == typeof(string))
-                {
-                    var v = f.GetValue(obj) as string;
-                    if (!string.IsNullOrEmpty(v)) return v;
-                }
-            }
-            if (obj is UnityEngine.Object uo) return uo.name;
-            return null;
-        }
-
-        private static Sprite GetSprite(object obj, params string[] names)
-        {
-            if (obj == null) return null;
-            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            var t = obj.GetType();
-
-            foreach (var n in names)
-            {
-                var p = t.GetProperty(n, BF);
-                if (p != null && typeof(Sprite).IsAssignableFrom(p.PropertyType))
-                    return p.GetValue(obj) as Sprite;
-
-                var f = t.GetField(n, BF);
-                if (f != null && typeof(Sprite).IsAssignableFrom(f.FieldType))
-                    return f.GetValue(obj) as Sprite;
-            }
-            return null;
-        }
-
-        private static string TryInvokeString(object obj, params string[] methodNames)
-        {
-            if (obj == null) return null;
-            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            var t = obj.GetType();
-
-            foreach (var n in methodNames)
-            {
-                var m = t.GetMethod(n, BF, null, Type.EmptyTypes, null);
-                if (m != null && m.ReturnType == typeof(string))
-                {
-                    try
-                    {
-                        var v = m.Invoke(obj, null) as string;
-                        if (!string.IsNullOrEmpty(v)) return v;
-                    }
-                    catch { }
-                }
-            }
-            return null;
-        }
+        // ---------- Link label extraction ----------
 
         private static string ExtractVisibleLinkLabel(TextMeshProUGUI tmp, TMP_LinkInfo linkInfo)
         {
@@ -362,5 +255,18 @@ namespace MMO.Chat.UI
         }
 
         private static string Fmt(Vector2 v) => $"({v.x:0.##},{v.y:0.##})";
+
+        // ---------------------------------------------------------------------
+        // Back-compat helpers (optional): forwarders to the composer
+        // ---------------------------------------------------------------------
+
+        /// Build a colored (by rarity) item link string for chat.
+        public static string FormatItemLink(object itemDef, string overrideName = null, bool underline = true)
+        {
+            // Accept either ItemDef or null; if not ItemDef, fall back to a neutral link.
+            if (itemDef is MMO.Shared.Item.ItemDef typed)
+                return ItemTooltipComposer.FormatChatLink(typed, underline);
+            return @"<link=""item:""><u><color=#9DA3A6>Item</color></u></link>";
+        }
     }
 }

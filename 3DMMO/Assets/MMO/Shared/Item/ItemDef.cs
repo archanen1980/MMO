@@ -20,7 +20,9 @@ namespace MMO.Shared.Item
         // ---------- Presentation ----------
         [Header("Presentation")]
         public Sprite icon;
-
+        [SerializeField] public ItemRarity rarity = ItemRarity.Common;
+        public string RarityHex => ItemRarityUtil.Hex(rarity);
+        
         [TextArea]
         public string description;
 

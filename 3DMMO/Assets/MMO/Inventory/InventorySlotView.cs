@@ -6,6 +6,7 @@ using UnityEngine.UI;
 using TMPro;
 using MMO.Shared.Item;   // ItemDef
 using MMO.Inventory;     // namespace alignment
+using MMO.Inventory.UI;  // ItemTooltipCursor (unified tooltip)
 
 namespace MMO.Inventory
 {
@@ -14,7 +15,7 @@ namespace MMO.Inventory
     /// - Visuals: icon + stack count (+ optional empty overlay/highlight)
     /// - Click: Backpack → auto-equip if possible, Equipment → unequip
     /// - Drag: Backpack→Backpack move/merge; Backpack→Equipment equip; Equipment→Backpack unequip
-    /// - Tooltip: cursor-follow via ItemTooltipCursor (Icon, Name, Description)
+    /// - Tooltip: now uses ItemTooltipCursor.ShowAtCursor(ItemDef) for unified tooltip (rarity-colors, etc.)
     /// </summary>
     public class InventorySlotView : MonoBehaviour,
         IPointerClickHandler, IBeginDragHandler, IDragHandler, IEndDragHandler,
@@ -37,7 +38,7 @@ namespace MMO.Inventory
         PlayerInventory _player;
         string _itemId;
         int _amount;
-        ItemDef _def;                         // store for tooltip
+        ItemDef _def;                         // cached for tooltip
         Func<string, ItemDef> _resolveDef;    // fallback resolver
 
         // Shared drag helpers
@@ -136,7 +137,7 @@ namespace MMO.Inventory
             if (selectionHighlight) selectionHighlight.enabled = true;
 
             // hide tooltip while dragging
-            UI.ItemTooltipCursor.Instance?.Hide();
+            ItemTooltipCursor.HideIfAny();
         }
 
         public void OnDrag(PointerEventData eventData)
@@ -164,7 +165,7 @@ namespace MMO.Inventory
             // Backpack -> Backpack : move/merge
             if (_area == Area.Backpack && target._area == Area.Backpack)
             {
-                _player.CmdMove(_index, target._index);            // ✅ 2-arg signature your PlayerInventory implements
+                _player.CmdMove(_index, target._index);            // ✅ 2-arg signature in PlayerInventory
                 return;
             }
 
@@ -182,11 +183,11 @@ namespace MMO.Inventory
                 return;
             }
 
-            // Equipment -> Equipment : not supported here (could do unequip then equip in two steps if desired)
+            // Equipment -> Equipment : not supported here
         }
 
         // ---------------------------------------------------------------------
-        // Tooltip (cursor-follow)
+        // Tooltip (cursor-follow) — unified via ItemTooltipCursor.ShowAtCursor(ItemDef)
         // ---------------------------------------------------------------------
         public void OnPointerEnter(PointerEventData eventData)
         {
@@ -195,22 +196,16 @@ namespace MMO.Inventory
             var def = _def ?? _resolveDef?.Invoke(_itemId);
             if (!def) return;
 
-            var payload = new UI.ItemTooltipCursor.Payload
-            {
-                Icon = def.icon,
-                Title = string.IsNullOrWhiteSpace(def.displayName) ? _itemId : def.displayName,
-                Body = def.description
-            };
-
-            UI.ItemTooltipCursor.Instance?.ShowAtCursor(payload);
+            // Unified: rarity-colored title + consistent body via ItemTooltipComposer
+            ItemTooltipCursor.ShowAtCursor(def);
         }
 
         public void OnPointerExit(PointerEventData eventData)
         {
-            UI.ItemTooltipCursor.Instance?.Hide();
+            ItemTooltipCursor.HideIfAny();
         }
 
-        void OnDisable() => UI.ItemTooltipCursor.Instance?.Hide();
+        void OnDisable() => ItemTooltipCursor.HideIfAny();
 
         // ---------------------------------------------------------------------
         // Drag icon helpers

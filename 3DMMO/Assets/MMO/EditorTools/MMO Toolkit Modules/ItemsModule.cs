@@ -13,7 +13,7 @@ namespace MMO.EditorTools
     {
         // ── Data ─────────────────────────────────────────────────────────────────
         ItemDef[] _items = Array.Empty<ItemDef>();      // raw, unsorted
-        ItemDef[] _view = Array.Empty<ItemDef>();      // filtered + sorted
+        ItemDef[] _view = Array.Empty<ItemDef>();       // filtered + sorted
 
         int _index = -1;                                // index within _view
         ItemDef _selected;
@@ -24,7 +24,7 @@ namespace MMO.EditorTools
         Tab _tab = Tab.List;
 
         // ── Sort + Search (shared across tabs) ──────────────────────────────────
-        enum SortMode { Name, ItemIdNumeric, ItemIdLex, Kind, EquipmentFirst }
+        enum SortMode { Name, ItemIdNumeric, ItemIdLex, Kind, EquipmentFirst, Rarity }
         SortMode _sortMode = SortMode.Name;
         bool _sortAsc = true;
         string _search = "";
@@ -104,7 +104,7 @@ namespace MMO.EditorTools
             EditorGUILayout.BeginHorizontal();
 
             // Left list
-            EditorGUILayout.BeginVertical(GUILayout.Width(320));
+            EditorGUILayout.BeginVertical(GUILayout.Width(340));
 
             using (var sv = new EditorGUILayout.ScrollViewScope(_left))
             {
@@ -116,7 +116,7 @@ namespace MMO.EditorTools
                     if (!it) continue;
 
                     string name = string.IsNullOrWhiteSpace(it.displayName) ? it.name : it.displayName;
-                    string label = $"{name}  [{it.itemId}]  • {it.kind}";
+                    string label = $"{name}  [{it.itemId}]  • {it.kind}  • {it.rarity}";
                     using (new EditorGUILayout.HorizontalScope("box"))
                     {
                         if (GUILayout.Toggle(_index == i, label, "Button"))
@@ -124,6 +124,10 @@ namespace MMO.EditorTools
                             _index = i;
                             _selected = it;
                         }
+
+                        // small rarity swatch on the right
+                        GUILayout.Space(6);
+                        DrawRarityChip(it.rarity);
                     }
                 }
             }
@@ -186,6 +190,9 @@ namespace MMO.EditorTools
                 EditorGUILayout.Space(6);
                 EditorGUILayout.LabelField("Classification", EditorStyles.boldLabel);
 
+                // Rarity (NEW)
+                DrawRarityField(ref _selected.rarity);
+
                 _selected.kind = (ItemKind)EditorGUILayout.EnumPopup("Item Type", _selected.kind);
 
                 using (new EditorGUI.DisabledScope(false))
@@ -234,6 +241,7 @@ namespace MMO.EditorTools
                 GUILayout.Label("Name", GUILayout.Width(180f));
                 GUILayout.Label("Item ID", GUILayout.Width(90f + 44f + 6f));
                 GUILayout.Label("Kind", GUILayout.Width(110f));
+                GUILayout.Label("Rarity", GUILayout.Width(150f)); // NEW
                 GUILayout.Label("Craft", GUILayout.Width(70f));
                 GUILayout.Label("Max", GUILayout.Width(70f));
                 GUILayout.Label("Equip Slots", GUILayout.Width(150f));
@@ -271,6 +279,14 @@ namespace MMO.EditorTools
 
                         // Kind
                         it.kind = (ItemKind)EditorGUILayout.EnumPopup(it.kind, GUILayout.Width(110f));
+
+                        // Rarity (NEW)
+                        using (new EditorGUILayout.HorizontalScope(GUILayout.Width(150f)))
+                        {
+                            DrawRarityChip(it.rarity);
+                            GUILayout.Space(4);
+                            it.rarity = (ItemRarity)EditorGUILayout.EnumPopup(it.rarity);
+                        }
 
                         // Craftable
                         it.isCraftable = EditorGUILayout.Toggle(it.isCraftable, GUILayout.Width(70f));
@@ -346,6 +362,9 @@ namespace MMO.EditorTools
             };
             asset.equipSlots = (kind == ItemKind.Equipment) ? EquipSlot.MainHand : EquipSlot.None;
 
+            // NEW: default rarity
+            asset.rarity = ItemRarity.Common;
+
             string path = AssetDatabase.GenerateUniqueAssetPath($"{ModuleUtil.ItemsFolder}/{asset.itemId}.asset");
             AssetDatabase.CreateAsset(asset, path);
             AssetDatabase.SaveAssets();
@@ -393,7 +412,8 @@ namespace MMO.EditorTools
                     string name = string.IsNullOrWhiteSpace(it.displayName) ? it.name : it.displayName;
                     return (name?.IndexOf(s, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0
                            || (it.itemId?.IndexOf(s, StringComparison.OrdinalIgnoreCase) ?? -1) >= 0
-                           || it.kind.ToString().IndexOf(s, StringComparison.OrdinalIgnoreCase) >= 0;
+                           || it.kind.ToString().IndexOf(s, StringComparison.OrdinalIgnoreCase) >= 0
+                           || it.rarity.ToString().IndexOf(s, StringComparison.OrdinalIgnoreCase) >= 0; // NEW
                 });
             }
 
@@ -428,6 +448,12 @@ namespace MMO.EditorTools
                     q = _sortAsc
                         ? q.OrderByDescending(it => it.kind == ItemKind.Equipment).ThenBy(NameKey, StringComparer.OrdinalIgnoreCase)
                         : q.OrderBy(it => it.kind == ItemKind.Equipment).ThenBy(NameKey, StringComparer.OrdinalIgnoreCase);
+                    break;
+
+                case SortMode.Rarity: // NEW
+                    q = _sortAsc
+                        ? q.OrderBy(it => (int)it.rarity).ThenBy(NameKey, StringComparer.OrdinalIgnoreCase)
+                        : q.OrderByDescending(it => (int)it.rarity).ThenByDescending(NameKey, StringComparer.OrdinalIgnoreCase);
                     break;
             }
 
@@ -490,6 +516,43 @@ namespace MMO.EditorTools
                     if (n > max) max = n;
             }
             return (max + 1).ToString();
+        }
+
+        // ─────────────────────────────────────────────────────────── Helpers (NEW)
+        static void DrawRarityField(ref ItemRarity rarity)
+        {
+            // Rarity dropdown
+            rarity = (ItemRarity)EditorGUILayout.EnumPopup("Rarity", rarity);
+
+            // Color chip + hex under the field for clarity
+            var hex = ItemRarityUtil.Hex(rarity);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Space(EditorGUIUtility.labelWidth);
+                DrawHexSwatch(hex, 40f, 16f);
+                GUILayout.Space(6);
+                EditorGUILayout.LabelField(hex, GUILayout.Width(80f));
+            }
+        }
+
+        static void DrawRarityChip(ItemRarity rarity)
+        {
+            var hex = ItemRarityUtil.Hex(rarity);
+            DrawHexSwatch(hex, 16f, 16f);
+        }
+
+        static void DrawHexSwatch(string hex, float w, float h)
+        {
+            ColorUtility.TryParseHtmlString(hex, out var col);
+            var r = GUILayoutUtility.GetRect(w, h, GUILayout.Width(w), GUILayout.Height(h));
+            // background
+            EditorGUI.DrawRect(r, col);
+            // subtle border
+            var border = new Color(0, 0, 0, 0.35f);
+            EditorGUI.DrawRect(new Rect(r.x, r.y, r.width, 1), border);
+            EditorGUI.DrawRect(new Rect(r.x, r.yMax - 1, r.width, 1), border);
+            EditorGUI.DrawRect(new Rect(r.x, r.y, 1, r.height), border);
+            EditorGUI.DrawRect(new Rect(r.xMax - 1, r.y, 1, r.height), border);
         }
     }
 }

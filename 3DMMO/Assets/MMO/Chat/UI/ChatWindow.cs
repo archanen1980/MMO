@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;              // reflection helpers (right-click catcher wiring)
 using System.Text;
+using System.Text.RegularExpressions; // regex for item link recolor
 using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -9,6 +10,7 @@ using UnityEngine.UI;
 using MMO.Chat;        // ChatChannel, ChatMessage
 using MMO.Chat.UI;     // ChatLine
 using MMO.Common.UI;   // UIContextMenu
+using MMO.Inventory.UI; // ItemTooltipComposer
 
 namespace MMO.Chat.UI
 {
@@ -68,6 +70,12 @@ namespace MMO.Chat.UI
         [SerializeField] private RectTransform popupRootOverride;
         [SerializeField] private int popupSortingOrder = 5000;
 
+        [Header("ItemDef Lookup (for coloring item links)")]
+        [Tooltip("Optional object with TryGetById(string, out ItemDef) or GetByIdOrNull(string). Leave null to use Resources only.")]
+        [SerializeField] private UnityEngine.Object optionalItemLookup;
+        [Tooltip("Folder under Resources/ that contains ItemDef assets.")]
+        [SerializeField] private string resourcesItemsFolder = "Items";
+
         // ----------------- Tabs Model -----------------
 
         [Serializable]
@@ -115,6 +123,10 @@ namespace MMO.Chat.UI
         private const string PrefKeyPosY = "chat.posy";
         private const string PrefKeyW = "chat.w";
         private const string PrefKeyH = "chat.h";
+
+        // Regex to find TMP item links: <link="item:ID">LABEL</link>
+        private static readonly Regex s_itemLinkRx =
+            new Regex("<link\\s*=\\s*\"item:([^\"]+)\">(?<label>.*?)</link>", RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
 
         // ----------------- Unity Lifecycle -----------------
 
@@ -846,7 +858,9 @@ namespace MMO.Chat.UI
             sb.Append("<color=").Append(channelHex).Append(">").Append("[").Append(message.channel).Append("]</color> ");
             if (!string.IsNullOrEmpty(message.from))
                 sb.Append("<b>").Append(message.from).Append(":</b> ");
-            sb.Append(message.text);
+
+            // Colorize any <link="item:...">...</link> by rarity (no underline)
+            sb.Append(ColorizeItemLinks(message.text));
 
             return sb.ToString();
         }
@@ -1416,6 +1430,29 @@ namespace MMO.Chat.UI
                 var p = t.GetProperty(n, BF);
                 if (p != null && p.CanWrite && (p.PropertyType == typeof(int))) { p.SetValue(targetComponent, value); return; }
             }
+        }
+
+        // ----------------- Item link recolor helper -----------------
+
+        private string ColorizeItemLinks(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return raw;
+
+            return s_itemLinkRx.Replace(raw, m =>
+            {
+                string id = m.Groups[1].Value;
+                // resolve ItemDef (via optional resolver or Resources)
+                var def = ItemTooltipComposer.Resolve(id, optionalItemLookup, resourcesItemsFolder);
+                if (def)
+                {
+                    // composer returns <link="item:id"><color=#HEX>Name</color></link> (no underline when false)
+                    return ItemTooltipComposer.FormatChatLink(def, underline: false);
+                }
+
+                // Fallback: keep original label but at least remove underline and use a neutral color
+                string label = m.Groups["label"].Value;
+                return $"<link=\"item:{id}\"><color=#FFFFFF>{label}</color></link>";
+            });
         }
     }
 }
