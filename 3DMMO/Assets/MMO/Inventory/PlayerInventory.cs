@@ -3,8 +3,9 @@ using System.Linq;
 using System.Reflection;
 using UnityEngine;
 using Mirror;
-using MMO.Shared.Item; // ItemDef, ItemKind, EquipSlot
-using MMO.Chat; // for LootChatBridge
+using MMO.Shared.Item;  // ItemDef, ItemKind, EquipSlot, ItemRarity
+using MMO.Chat;         // LootChatBridge
+using MMO.Loot.UI;      // LootToastWindow
 
 // Alias for readability
 using EquipSlotAlias = MMO.Shared.Item.EquipSlot;
@@ -15,6 +16,8 @@ namespace MMO.Inventory
     /// Mirror-synced player inventory & equipment.
     /// - Backpack: grid of stackable InvSlot entries.
     /// - Equipment: fixed-size array; each index maps to a chosen EquipSlot (configurable in inspector).
+    /// - On any successful ServerAdd, notifies the owning client via TargetLootToast()
+    ///   which shows a toast and posts a Loot chat message.
     /// </summary>
     public class PlayerInventory : NetworkBehaviour
     {
@@ -205,7 +208,18 @@ namespace MMO.Inventory
                 remaining -= put;
             }
 
-            return amount - remaining;
+            int added = amount - remaining;
+
+            // Notify the owning client once per add (aggregate across stacks)
+            if (added > 0 && connectionToClient != null)
+            {
+                string itemName = TryGetDisplayName(def) ?? def.itemId;
+                string rarityHex = RarityHex(def.rarity);
+                // icon path not used: client resolves icon from ItemDef (or a provided path)
+                TargetLootToast(connectionToClient, def.itemId, itemName, added, rarityHex, null);
+            }
+
+            return added;
         }
 
         [Server]
@@ -354,46 +368,50 @@ namespace MMO.Inventory
         [Command] public void CmdMove(int from, int to, int amount) => ServerMoveCompat(from, to, true, Math.Max(1, amount), true);
         [Command] public void CmdMove(int from, int to, bool split, int amount) => ServerMoveCompat(from, to, split, Math.Max(1, amount), true);
         [Command] public void CmdMove(int from, int to, int amount, bool allowSwap) => ServerMoveCompat(from, to, true, Math.Max(1, amount), allowSwap);
-        //[Command] public void CmdMove(int from, int to, bool allowSwap) => ServerMoveCompat(from, to, false, 0, allowSwap);
 
         [Command]
         public void CmdCheatAddItem(int legacyNumericId, int amount)
         {
             if (amount <= 0) return;
-
-            int added = ServerAdd(legacyNumericId, amount);
-            if (added > 0)
-            {
-                string itemId = legacyNumericId.ToString();
-                string itemName = TryGetDisplayName(ResolveDef(itemId)) ?? itemId;
-                TargetNotifyLootReceived(connectionToClient, itemId, itemName, added);
-            }
+            _ = ServerAdd(legacyNumericId.ToString(), amount); // ServerAdd handles toast+chat
         }
 
         [Command]
         public void CmdCheatAddItemS(string itemId, int amount)
         {
             if (string.IsNullOrWhiteSpace(itemId) || amount <= 0) return;
-
-            int added = ServerAdd(itemId, amount);
-            if (added > 0)
-            {
-                string itemName = TryGetDisplayName(ResolveDef(itemId)) ?? itemId;
-                TargetNotifyLootReceived(connectionToClient, itemId, itemName, added);
-            }
+            _ = ServerAdd(itemId, amount); // ServerAdd handles toast+chat
         }
 
         /// <summary>
-        /// Owner-only notification to post a local Loot-channel message with a clickable item link.
+        /// Owner-only RPC that shows the toast (icon loaded client-side) AND posts a Loot chat message.
         /// </summary>
         [TargetRpc]
-        void TargetNotifyLootReceived(NetworkConnectionToClient conn, string itemId, string itemName, int amount)
+        void TargetLootToast(NetworkConnectionToClient conn,
+                             string itemId, string itemName, int amount,
+                             string rarityHex, string iconPathOrNull)
         {
+            // Try explicit Resources path if provided
+            Sprite icon = null;
+            if (!string.IsNullOrEmpty(iconPathOrNull))
+                icon = Resources.Load<Sprite>(iconPathOrNull);
+
+            // Fallback: resolve the item locally and use its icon
+            if (!icon)
+            {
+                var def = ResolveDef(itemId);   // works on client too (Resources/lookup)
+                if (def) icon = def.icon;
+            }
+
+            // On-screen toast
+            LootToastWindow.PostLootToast(itemId, itemName, amount, rarityHex, icon);
+
+            // Chat message
             LootChatBridge.PostLootReceived(itemId, itemName, amount);
         }
 
         // Prefer “displayName” if available; fall back to Unity name or itemId.
-        private string TryGetDisplayName(MMO.Shared.Item.ItemDef def)
+        private string TryGetDisplayName(ItemDef def)
         {
             if (!def) return null;
 
@@ -519,6 +537,22 @@ namespace MMO.Inventory
             var all = Resources.LoadAll<ItemDef>("Items");
             return all.FirstOrDefault(d => d && string.Equals(d.itemId, itemId, StringComparison.OrdinalIgnoreCase));
         }
+
+        // Local rarity → hex mapping (kept in sync with chat/tooltip colors)
+        static string RarityHex(ItemRarity r) => r switch
+        {
+            ItemRarity.Common => "#9DA3A6",
+            ItemRarity.Uncommon => "#1EFF00",
+            ItemRarity.Rare => "#0070DD",
+            ItemRarity.Heroic => "#A335EE",
+            ItemRarity.Divine => "#FF8000",
+            ItemRarity.Epic => "#FFD700",
+            ItemRarity.Legendary => "#FF4040",
+            ItemRarity.Mythic => "#CD7F32",
+            ItemRarity.Ancient => "#00E5FF",
+            ItemRarity.Artifact => "#E6CC80",
+            _ => "#FFFFFF"
+        };
 
         // ----- Slot accessors (simple & safe: Convert for get) -----
         static class Slot
