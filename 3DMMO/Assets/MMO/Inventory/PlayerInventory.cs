@@ -3,9 +3,9 @@ using System.Linq;
 using System.Reflection;
 using UnityEngine;
 using Mirror;
-using MMO.Shared.Item;  // ItemDef, ItemKind, EquipSlot, ItemRarity
-using MMO.Chat;         // LootChatBridge
-using MMO.Loot.UI;      // LootToastWindow
+using MMO.Shared.Item; // ItemDef, ItemKind, EquipSlot, ItemRarity
+using MMO.Chat;        // LootChatBridge
+using MMO.Loot.UI;     // LootToastWindow
 
 // Alias for readability
 using EquipSlotAlias = MMO.Shared.Item.EquipSlot;
@@ -16,8 +16,9 @@ namespace MMO.Inventory
     /// Mirror-synced player inventory & equipment.
     /// - Backpack: grid of stackable InvSlot entries.
     /// - Equipment: fixed-size array; each index maps to a chosen EquipSlot (configurable in inspector).
-    /// - On any successful ServerAdd, notifies the owning client via TargetLootToast()
-    ///   which shows a toast and posts a Loot chat message.
+    ///
+    /// Notifications (loot toasts/chat) only occur via ServerAwardLoot(...).
+    /// Internal operations (equip/unequip/moves) are silent.
     /// </summary>
     public class PlayerInventory : NetworkBehaviour
     {
@@ -62,7 +63,6 @@ namespace MMO.Inventory
         public const int DefaultEquipCount = 8;
         public int EquipCount => equipLayout != null && equipLayout.Length > 0 ? equipLayout.Length : DefaultEquipCount;
 
-        // Index <-> EquipSlot mapping (uses the inspector-driven layout)
         public EquipSlotAlias IndexToSlot(int index)
             => (index >= 0 && index < EquipCount) ? equipLayout[index] : EquipSlotAlias.None;
 
@@ -77,21 +77,18 @@ namespace MMO.Inventory
 #if UNITY_EDITOR
         void OnValidate()
         {
-            // Keep layout non-null and at least DefaultEquipCount long for convenience
             if (equipLayout == null || equipLayout.Length == 0)
                 equipLayout = new[] {
                     EquipSlotAlias.Head, EquipSlotAlias.Chest, EquipSlotAlias.Legs, EquipSlotAlias.Hands,
                     EquipSlotAlias.Feet, EquipSlotAlias.MainHand, EquipSlotAlias.OffHand, EquipSlotAlias.Accessory
                 };
 
-            // Sanitize entries: force to single-bit flags (no multi-bit combos for a position)
             for (int i = 0; i < equipLayout.Length; i++)
                 equipLayout[i] = SanitizeSingleFlag(equipLayout[i]);
         }
 
         static EquipSlotAlias SanitizeSingleFlag(EquipSlotAlias v)
         {
-            // If it's exactly one known flag, keep it. Otherwise coerce "None".
             switch (v)
             {
                 case EquipSlotAlias.None:
@@ -125,7 +122,6 @@ namespace MMO.Inventory
             Backpack.Callback += OnBackpackSyncChanged;
             Equipped.Callback += OnEquippedSyncChanged;
 
-            // Initial UI notify
             OnClientInventoryChanged?.Invoke();
             OnBackpackChanged?.Invoke();
             OnEquippedChanged?.Invoke();
@@ -141,11 +137,9 @@ namespace MMO.Inventory
         [Server]
         public void EnsureCapacities()
         {
-            // Backpack
             while (Backpack.Count < backpackCapacity) Backpack.Add(default);
             while (Backpack.Count > backpackCapacity) Backpack.RemoveAt(Backpack.Count - 1);
 
-            // Equipped mirrors inspector-driven EquipCount
             int desired = EquipCount;
             while (Equipped.Count < desired) Equipped.Add(default);
             while (Equipped.Count > desired) Equipped.RemoveAt(Equipped.Count - 1);
@@ -168,8 +162,11 @@ namespace MMO.Inventory
         //                            Public API (Server)
         // =====================================================================
 
+        // --- Silent add/remove primitives (NO notifications) ---
+
         [Server] public int ServerAdd(string itemId, int amount) => ServerAdd(ResolveDef(itemId), amount);
 
+        /// <summary>Adds to backpack (fills partial stacks, then empties). SILENT.</summary>
         [Server]
         public int ServerAdd(ItemDef def, int amount)
         {
@@ -208,20 +205,10 @@ namespace MMO.Inventory
                 remaining -= put;
             }
 
-            int added = amount - remaining;
-
-            // Notify the owning client once per add (aggregate across stacks)
-            if (added > 0 && connectionToClient != null)
-            {
-                string itemName = TryGetDisplayName(def) ?? def.itemId;
-                string rarityHex = RarityHex(def.rarity);
-                // icon path not used: client resolves icon from ItemDef (or a provided path)
-                TargetLootToast(connectionToClient, def.itemId, itemName, added, rarityHex, null);
-            }
-
-            return added;
+            return amount - remaining;
         }
 
+        /// <summary>Removes from backpack. SILENT.</summary>
         [Server]
         public int ServerRemove(string itemId, int amount)
         {
@@ -313,6 +300,7 @@ namespace MMO.Inventory
             from = (left > 0) ? WithAmount(from, left) : default;
             Backpack[backpackIndex] = from;
 
+            // Return previously equipped item to backpack (silent)
             if (!IsEmpty(eqOld))
                 ServerAdd(GetItemId(eqOld), GetAmount(eqOld));
 
@@ -326,7 +314,7 @@ namespace MMO.Inventory
             var eq = Equipped[equipIndex];
             if (IsEmpty(eq)) return false;
 
-            int added = ServerAdd(GetItemId(eq), GetAmount(eq));
+            int added = ServerAdd(GetItemId(eq), GetAmount(eq)); // silent
             if (added <= 0) return false;
 
             Equipped[equipIndex] = default;
@@ -369,44 +357,71 @@ namespace MMO.Inventory
         [Command] public void CmdMove(int from, int to, bool split, int amount) => ServerMoveCompat(from, to, split, Math.Max(1, amount), true);
         [Command] public void CmdMove(int from, int to, int amount, bool allowSwap) => ServerMoveCompat(from, to, true, Math.Max(1, amount), allowSwap);
 
+        // ---------- Cheats (use ServerAwardLoot to notify) ----------
         [Command]
         public void CmdCheatAddItem(int legacyNumericId, int amount)
         {
             if (amount <= 0) return;
-            _ = ServerAdd(legacyNumericId.ToString(), amount); // ServerAdd handles toast+chat
+            ServerAwardLoot(legacyNumericId.ToString(), amount);
         }
 
         [Command]
         public void CmdCheatAddItemS(string itemId, int amount)
         {
             if (string.IsNullOrWhiteSpace(itemId) || amount <= 0) return;
-            _ = ServerAdd(itemId, amount); // ServerAdd handles toast+chat
+            ServerAwardLoot(itemId, amount);
+        }
+
+        // =====================================================================
+        //                    Loot Award (with notifications)
+        // =====================================================================
+
+        /// <summary>
+        /// Award loot by itemId (adds to backpack). Triggers toast + chat for the owner only.
+        /// </summary>
+        [Server]
+        public int ServerAwardLoot(string itemId, int amount)
+        {
+            var def = ResolveDef(itemId);
+            return ServerAwardLoot(def, amount);
         }
 
         /// <summary>
-        /// Owner-only RPC that shows the toast (icon loaded client-side) AND posts a Loot chat message.
+        /// Award loot (adds to backpack). Triggers toast + chat for the owner only.
         /// </summary>
-        [TargetRpc]
-        void TargetLootToast(NetworkConnectionToClient conn,
-                             string itemId, string itemName, int amount,
-                             string rarityHex, string iconPathOrNull)
+        [Server]
+        public int ServerAwardLoot(ItemDef def, int amount)
         {
-            // Try explicit Resources path if provided
-            Sprite icon = null;
-            if (!string.IsNullOrEmpty(iconPathOrNull))
-                icon = Resources.Load<Sprite>(iconPathOrNull);
+            if (!def || amount <= 0) return 0;
 
-            // Fallback: resolve the item locally and use its icon
-            if (!icon)
-            {
-                var def = ResolveDef(itemId);   // works on client too (Resources/lookup)
-                if (def) icon = def.icon;
-            }
+            int added = ServerAdd(def, amount); // silent add
+            if (added <= 0) return 0;
 
-            // On-screen toast
-            LootToastWindow.PostLootToast(itemId, itemName, amount, rarityHex, icon);
+            string displayName = TryGetDisplayName(def) ?? def.itemId ?? def.name;
+            displayName = DeHyphenate(displayName);
 
-            // Chat message
+            string rarityHex = HexFor(def.rarity);
+
+            // NOTE: no sprite sent here (avoid Mirror serializing textures)
+            TargetLootToast(connectionToClient, def.itemId, displayName, added, rarityHex);
+            TargetNotifyLootReceived(connectionToClient, def.itemId, displayName, added);
+
+            return added;
+        }
+
+        // ---------------------- Client Notifications ----------------------
+
+        /// <summary>Owner-only: show local loot toast (left-side UI).</summary>
+        [TargetRpc]
+        void TargetLootToast(NetworkConnectionToClient conn, string itemId, string itemName, int amount, string rarityHex)
+        {
+            LootToastWindow.PostLootToast(itemId, itemName, amount, rarityHex);
+        }
+
+        /// <summary>Owner-only: post a Loot channel message with a clickable link.</summary>
+        [TargetRpc]
+        void TargetNotifyLootReceived(NetworkConnectionToClient conn, string itemId, string itemName, int amount)
+        {
             LootChatBridge.PostLootReceived(itemId, itemName, amount);
         }
 
@@ -415,7 +430,6 @@ namespace MMO.Inventory
         {
             if (!def) return null;
 
-            // Try common property names via reflection, then fallback to UnityEngine.Object.name.
             try
             {
                 var t = def.GetType();
@@ -428,10 +442,27 @@ namespace MMO.Inventory
             }
             catch { /* ignore */ }
 
-            // Unity object name (often human-readable for ScriptableObject assets)
             return def.name;
         }
 
+        private static string DeHyphenate(string s) => string.IsNullOrEmpty(s) ? s : s.Replace("-", " ");
+
+        private static string HexFor(ItemRarity r) => r switch
+        {
+            ItemRarity.Common => "#9DA3A6",
+            ItemRarity.Uncommon => "#1EFF00",
+            ItemRarity.Rare => "#0070DD",
+            ItemRarity.Heroic => "#A335EE",
+            ItemRarity.Divine => "#FF8000",
+            ItemRarity.Epic => "#FFD700",
+            ItemRarity.Legendary => "#FF4040",
+            ItemRarity.Mythic => "#CD7F32",
+            ItemRarity.Ancient => "#00E5FF",
+            ItemRarity.Artifact => "#E6CC80",
+            _ => "#FFFFFF"
+        };
+
+        // ---------- Legacy Move Compat (silent) ----------
         [Server]
         void ServerMoveCompat(int from, int to, bool split, int amount, bool allowSwap)
         {
@@ -538,23 +569,7 @@ namespace MMO.Inventory
             return all.FirstOrDefault(d => d && string.Equals(d.itemId, itemId, StringComparison.OrdinalIgnoreCase));
         }
 
-        // Local rarity → hex mapping (kept in sync with chat/tooltip colors)
-        static string RarityHex(ItemRarity r) => r switch
-        {
-            ItemRarity.Common => "#9DA3A6",
-            ItemRarity.Uncommon => "#1EFF00",
-            ItemRarity.Rare => "#0070DD",
-            ItemRarity.Heroic => "#A335EE",
-            ItemRarity.Divine => "#FF8000",
-            ItemRarity.Epic => "#FFD700",
-            ItemRarity.Legendary => "#FF4040",
-            ItemRarity.Mythic => "#CD7F32",
-            ItemRarity.Ancient => "#00E5FF",
-            ItemRarity.Artifact => "#E6CC80",
-            _ => "#FFFFFF"
-        };
-
-        // ----- Slot accessors (simple & safe: Convert for get) -----
+        // ----- Slot accessors -----
         static class Slot
         {
             static readonly FieldInfo fId, fAmt;

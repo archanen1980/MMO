@@ -205,8 +205,8 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_Sprite: {fileID: 0}
-  m_Type: 0
+  m_Sprite: {fileID: 10907, guid: 0000000000000000f000000000000000, type: 0}
+  m_Type: 1
   m_PreserveAspect: 0
   m_FillCenter: 1
   m_FillMethod: 4
@@ -271,11 +271,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 51f59e52b12f1bd48b2a8e2d3e46d7e8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  area: 0
-  index: -1
+  _area: 0
+  _index: -1
   icon: {fileID: 5489347011213204195}
   countLabel: {fileID: 155034624247875807}
   emptyOverlay: {fileID: 0}
+  selectionHighlight: {fileID: 0}
 --- !u!1 &5048873724170741815
 GameObject:
   m_ObjectHideFlags: 0
@@ -341,8 +342,8 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_Sprite: {fileID: 0}
-  m_Type: 0
+  m_Sprite: {fileID: 10907, guid: 0000000000000000f000000000000000, type: 0}
+  m_Type: 1
   m_PreserveAspect: 0
   m_FillCenter: 1
   m_FillMethod: 4

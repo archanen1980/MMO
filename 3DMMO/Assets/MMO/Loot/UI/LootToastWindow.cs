@@ -1,7 +1,7 @@
-// Assets/MMO/Loot/UI/LootToastWindow.cs
 using UnityEngine;
 using TMPro;
 using UnityEngine.UI;
+using MMO.Shared.Item; // ItemDef for icon resolution
 
 namespace MMO.Loot.UI
 {
@@ -17,105 +17,52 @@ namespace MMO.Loot.UI
         [Tooltip("Prefab to spawn for each toast. Can be ANY prefab; a LootToastEntry will be added if missing.")]
         [SerializeField] private GameObject entryPrefab;
 
-        [Header("Screen Clamp")]
-        [Tooltip("If enabled, nudges this window fully on-screen after layout.")]
-        [SerializeField] private bool clampToScreen = true;
-        [SerializeField] private float screenPadding = 12f;
-
         void Awake()
         {
             Instance = this;
             if (!listRoot) listRoot = transform as RectTransform;
         }
 
-        void OnEnable()
-        {
-            if (clampToScreen) StartCoroutine(CoClampAfterLayout());
-        }
-
-        System.Collections.IEnumerator CoClampAfterLayout()
-        {
-            // Wait for one frame so layout sizes are finalized
-            yield return null;
-            ClampWindowToScreen();
-        }
-
-        void OnRectTransformDimensionsChange()
-        {
-            if (isActiveAndEnabled && clampToScreen)
-                ClampWindowToScreen();
-        }
-
-        void ClampWindowToScreen()
-        {
-            var rt = transform as RectTransform;
-            if (!rt) return;
-
-            var canvas = GetComponentInParent<Canvas>();
-            if (!canvas) return;
-
-            // Get window world corners
-            var corners = new Vector3[4];
-            rt.GetWorldCorners(corners);
-            float minX = corners[0].x; // bottom-left
-            float minY = corners[0].y;
-            float maxX = corners[2].x; // top-right
-            float maxY = corners[2].y;
-
-            float left = screenPadding;
-            float right = Screen.width - screenPadding;
-            float bottom = screenPadding;
-            float top = Screen.height - screenPadding;
-
-            float dx = 0f, dy = 0f;
-            if (minX < left) dx += left - minX;
-            if (maxX > right) dx -= maxX - right;
-            if (minY < bottom) dy += bottom - minY;
-            if (maxY > top) dy -= maxY - top;
-
-            if (Mathf.Approximately(dx, 0f) && Mathf.Approximately(dy, 0f))
-                return;
-
-            Camera cam = (canvas.renderMode == RenderMode.ScreenSpaceOverlay) ? null : canvas.worldCamera;
-
-            // Compute current pivot screen point and desired shifted screen point,
-            // then convert to local space delta for anchoredPosition.
-            Vector2 currScreen = RectTransformUtility.WorldToScreenPoint(cam, rt.position);
-            Vector2 nextScreen = currScreen + new Vector2(dx, dy);
-
-            RectTransform parent = rt.parent as RectTransform;
-            if (!parent) return;
-
-            RectTransformUtility.ScreenPointToLocalPointInRectangle(parent, currScreen, cam, out var currLocal);
-            RectTransformUtility.ScreenPointToLocalPointInRectangle(parent, nextScreen, cam, out var nextLocal);
-
-            rt.anchoredPosition += (nextLocal - currLocal);
-        }
-
         /// <summary>
         /// Static entry point used by server-side TargetRpc.
+        /// No sprite is passed over the network; we resolve icon on the client via Resources/Items.
         /// </summary>
-        public static void PostLootToast(string itemId, string itemName, int amount, string rarityHex, Sprite icon)
+        public static void PostLootToast(string itemId, string itemName, int amount, string rarityHex)
         {
             if (!Instance || !Instance.entryPrefab || !Instance.listRoot)
                 return;
 
-            Instance.Spawn(itemId, itemName, amount, rarityHex, icon);
+            var icon = ResolveIcon(itemId);
+            Instance.Spawn(itemName, amount, rarityHex, icon);
         }
 
-        void Spawn(string itemId, string itemName, int amount, string rarityHex, Sprite icon)
+        static Sprite ResolveIcon(string itemId)
+        {
+            if (string.IsNullOrWhiteSpace(itemId)) return null;
+
+            // Try direct Resources path: Resources/Items/<itemId>
+            var def = Resources.Load<ItemDef>($"Items/{itemId}");
+            if (def && def.icon) return def.icon;
+
+            // Fallback: scan all Items for matching def.itemId (case-insensitive)
+            var all = Resources.LoadAll<ItemDef>("Items");
+            foreach (var d in all)
+                if (d && !string.IsNullOrEmpty(d.itemId) &&
+                    string.Equals(d.itemId, itemId, System.StringComparison.OrdinalIgnoreCase))
+                    return d.icon;
+
+            return null;
+        }
+
+        void Spawn(string itemName, int amount, string rarityHex, Sprite icon)
         {
             var go = Instantiate(entryPrefab, listRoot);
             var entry = go.GetComponent<LootToastEntry>();
             if (!entry) entry = go.AddComponent<LootToastEntry>();
 
-            // Best-effort auto-wire if the fields weren’t set on the prefab
             entry.TryAutoWire();
-
             entry.Bind(itemName, amount, rarityHex, icon);
             entry.Play();
-
-            if (clampToScreen) ClampWindowToScreen();
         }
     }
 
@@ -169,13 +116,10 @@ namespace MMO.Loot.UI
                 iconImage.enabled = icon != null;
             }
 
-            // Clean item name: replace '-' and '_' with spaces
-            string cleanName = CleanName(itemName);
-
             if (nameText)
                 nameText.text = string.IsNullOrEmpty(rarityHex)
-                    ? cleanName
-                    : $"<color={NormalizeHex(rarityHex)}>{cleanName}</color>";
+                    ? itemName
+                    : $"<color={NormalizeHex(rarityHex)}>{itemName}</color>";
 
             if (amountText)
                 amountText.text = amount > 1 ? $"x{amount}" : string.Empty;
@@ -216,7 +160,6 @@ namespace MMO.Loot.UI
                 yield return null;
             }
 
-            // Done — destroy or pool as you prefer
             Destroy(gameObject);
         }
 
@@ -224,14 +167,6 @@ namespace MMO.Loot.UI
         {
             if (string.IsNullOrEmpty(hex)) return "#FFFFFF";
             return hex[0] == '#' ? hex : "#" + hex;
-        }
-
-        static string CleanName(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return s;
-            s = s.Replace('-', ' ').Replace('_', ' ');
-            // collapse any accidental double spaces
-            return System.Text.RegularExpressions.Regex.Replace(s, @"\s{2,}", " ").Trim();
         }
     }
 }
