@@ -19,10 +19,10 @@ GameObject:
   - component: {fileID: 7487298496893498173}
   - component: {fileID: -7195934128688185136}
   - component: {fileID: 7733239264075376872}
-  - component: {fileID: 4828447482054355534}
-  - component: {fileID: 4519322649743232046}
-  - component: {fileID: -4759980288197852314}
   - component: {fileID: 518082711759381276}
+  - component: {fileID: 4728439892294084616}
+  - component: {fileID: 8981087571407374597}
+  - component: {fileID: 4228853020784370627}
   m_Layer: 3
   m_Name: MmoPlayer
   m_TagString: Player
@@ -292,78 +292,6 @@ MonoBehaviour:
     itemId: 6
     legacyNumericId: 0
     amount: 1
---- !u!114 &4828447482054355534
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 7934740045643598440}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: bb65acbe9c786124da3b5e3cf908d197, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  syncDirection: 0
-  syncMode: 0
-  syncInterval: 0
-  initializeWith:
-  - {fileID: 11400000, guid: 50be0024fdcb94245bd648fcd16d9ab1, type: 2}
-  - {fileID: 11400000, guid: d561f208ae418a345a602d7e1da94c36, type: 2}
-  - {fileID: 11400000, guid: 1ec9bd8ab2a06ea45afe96cfda659e32, type: 2}
-  - {fileID: 11400000, guid: b26e966febc2fcd4db60d665d370b075, type: 2}
---- !u!114 &4519322649743232046
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 7934740045643598440}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 13bd4a14bed228b44ab16e95a6f2157d, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  syncDirection: 0
-  syncMode: 0
-  syncInterval: 0
-  onlyTheseCurrencies:
-  - {fileID: 11400000, guid: 50be0024fdcb94245bd648fcd16d9ab1, type: 2}
-  - {fileID: 11400000, guid: d561f208ae418a345a602d7e1da94c36, type: 2}
-  - {fileID: 11400000, guid: 1ec9bd8ab2a06ea45afe96cfda659e32, type: 2}
-  - {fileID: 11400000, guid: b26e966febc2fcd4db60d665d370b075, type: 2}
-  showGains: 1
-  showSpends: 1
-  minAbsoluteAmount: 0
-  registryOverride: {fileID: 11400000, guid: 3749d4d2f72076043ad3879f591521e0, type: 2}
-  fallbackPollSeconds: 0.25
-  verbose: 0
---- !u!114 &-4759980288197852314
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 7934740045643598440}
-  m_Enabled: 0
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 109712747aa4a994a9ff0f795b28fcd1, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  syncDirection: 0
-  syncMode: 0
-  syncInterval: 0
-  enableInRelease: 0
-  toggleKey: 291
-  unlockCursorWhenOpen: 1
-  coins: {fileID: 11400000, guid: 50be0024fdcb94245bd648fcd16d9ab1, type: 2}
-  coinsIdFallback: coins
-  specials: []
-  copperStep: 10
-  silverStep: 1
-  goldStep: 1
-  platinumStep: 0
-  specialStep: 10
 --- !u!114 &518082711759381276
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -381,6 +309,79 @@ MonoBehaviour:
   syncInterval: 0
   maxLength: 240
   minSendInterval: 0.2
+--- !u!114 &4728439892294084616
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7934740045643598440}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2b2fe4d7c5ca15441a5000f018104371, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  syncDirection: 0
+  syncMode: 0
+  syncInterval: 0
+  cam: {fileID: 0}
+  interactKey: 101
+  interactMask:
+    serializedVersion: 2
+    m_Bits: 128
+  sphereRadius: 0.2
+  extraMeters: 3
+  serverMaxDistance: 7
+  drawDebugRay: 1
+  rayColorMiss: {r: 1, g: 1, b: 1, a: 0.35}
+  rayColorHit: {r: 0, g: 1, b: 0, a: 1}
+--- !u!114 &8981087571407374597
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7934740045643598440}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4eb25920b538a494587080f3d1210c9a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  provider: {fileID: 0}
+  cam: {fileID: 0}
+  player: {fileID: 0}
+  extraDistance: 3
+  hitMask:
+    serializedVersion: 2
+    m_Bits: 128
+  triggerQuery: 2
+  debugRay: 1
+  outlineMaterial: {fileID: 2100000, guid: 2726f1dde12571340bbd099a185a20e6, type: 2}
+  lootableColor: {r: 0.2, g: 1, b: 0.6, a: 1}
+  defaultColor: {r: 1, g: 0.9, b: 0.2, a: 1}
+  outlineWidth: 0.015
+  onlyHighlightLootables: 1
+--- !u!114 &4228853020784370627
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7934740045643598440}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: db77cf8cb23c05247be4bafee3ffa04c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  player: {fileID: 0}
+  cam: {fileID: 0}
+  cameraPivot: {fileID: 0}
+  hitMask:
+    serializedVersion: 2
+    m_Bits: 128
+  extraDistance: 3
+  triggerQuery: 2
+  debugDrawAlways: 0
 --- !u!1 &8304326361285448762
 GameObject:
   m_ObjectHideFlags: 0
