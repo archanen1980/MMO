@@ -38039,7 +38039,7 @@ PrefabInstance:
     - target: {fileID: 1761372978458102789, guid: 255d9054e0559a644b420a615f63612a, type: 3}
       propertyPath: lootTable
       value: 
-      objectReference: {fileID: 11400000, guid: 93472e01739e75543a516fdc4d13e3e6, type: 2}
+      objectReference: {fileID: 11400000, guid: 73d9ca1cf5ebca8458cc2def053b8106, type: 2}
     - target: {fileID: 1761372978458102789, guid: 255d9054e0559a644b420a615f63612a, type: 3}
       propertyPath: selection
       value: 1
