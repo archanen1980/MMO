@@ -1,241 +1,206 @@
-// Assets/Hughes_Jeremiah_Assets/MMO/Net/MmoNetworkManager.cs
-using Mirror;
+using System;
+using System.Linq;
+using System.Collections.Generic;
 using UnityEngine;
-using MMO.Shared;
-using MMO.Gameplay;                 // PlayerName
-using MMO.Server.Persistence;       // IPersistence / JsonPersistence
+using Mirror;
 
 namespace MMO.Net
 {
     /// <summary>
-    /// Thin wrapper over Mirror's NetworkManager so we can:
-    /// - Log lifecycle events
-    /// - Handle auth + spawn with saved data
-    /// - Set replicated display names on spawn
-    /// - Save character state on disconnect
-    /// - Provide SafeStartHost() & robust shutdown
+    /// Hardened NetworkManager that never throws if spawn points are missing.
+    /// - Uses Mirror's NetworkStartPosition if available
+    /// - Otherwise uses the first valid Transform in the inspector array
+    /// - Otherwise finds a GameObject by tag (default "SpawnPoint")
+    /// - Otherwise spawns at Vector3.zero with identity rotation
+    ///
+    /// Also supports round-robin spawn cycling and safe tag checks.
     /// </summary>
     public class MmoNetworkManager : NetworkManager
     {
-        [Header("MMO Settings")]
-        [Tooltip("Max simultaneous players (soft cap)")]
-        public int maxPlayers = 100;
+        [Header("Spawning (Inspector)")]
+        [Tooltip("Optional explicit spawn points. If empty, we fall back to NetworkStartPosition or a tag search.")]
+        [SerializeField] private Transform[] spawnPoints = Array.Empty<Transform>();
 
-        [Tooltip("Optional spawn points; will cycle through if set")]
-        public Transform[] spawnPoints;
+        [Tooltip("If no NetworkStartPosition and no inspector points, try this tag.")]
+        [SerializeField] private string spawnTag = "SpawnPoint";
 
-        bool serverSystemsInitialized;
-        IPersistence _persistence;
+        [Tooltip("If true, we'll attempt a tag-based search for spawn points. If the tag isn't defined, we skip it without throwing.")]
+        [SerializeField] private bool useTagSearch = true;
 
-        public override void Awake()
+        [Header("Options")]
+        [Tooltip("Cycle through spawn points instead of always using the first.")]
+        [SerializeField] private bool roundRobin = true;
+
+        [Tooltip("Log helpful diagnostics to the Console during spawns.")]
+        [SerializeField] private bool verboseLogs = true;
+
+        int _nextIndex;
+
+        [Header("Discovery")]
+        [Tooltip("Search for spawn points on Awake (NetworkStartPosition + tag) and cache them before any spawn occurs.")]
+        [SerializeField] private bool scanOnAwake = true;
+
+        void Awake()
         {
-            base.Awake();
-
-            // Prevent duplicates (common with DDOL & additive scenes)
-            if (singleton != null && singleton != this)
-            {
-                Destroy(gameObject);
-                return;
-            }
-            DontDestroyOnLoad(gameObject);
-
-            // Ensure a Transport is assigned on the NetworkManager
-            if (!transport)
-            {
-                // Try to pick one from the same GameObject
-                var t = GetComponent<Transport>();
-                if (t != null) transport = t;
-            }
-
-            // Ensure an authenticator exists & is set
-            if (!authenticator)
-            {
-                var na = GetComponent<NameAuthenticator>() ?? gameObject.AddComponent<NameAuthenticator>();
-                authenticator = na;
-            }
-
-            // Simple JSON persistence for dev/learning
-            _persistence = new JsonPersistence();
+            if (scanOnAwake) ScanSpawnPoints("Awake");
         }
 
-        /// <summary>
-        /// Call this from your bootstrap/UI instead of StartHost().
-        /// </summary>
-        public bool SafeStartHost()
+        public override void OnServerSceneChanged(string sceneName)
         {
-            if (!PreflightCheck())
-                return false;
-
-            if (NetworkServer.active || NetworkClient.isConnected || NetworkClient.active)
-            {
-                Debug.Log("[Net] Already running/connected, ignoring SafeStartHost.");
-                return true;
-            }
-
-            Debug.Log("[Net] SafeStartHost()");
-            StartHost(); // will trigger server/client callbacks
-            return true;
+            base.OnServerSceneChanged(sceneName);
+            ScanSpawnPoints("OnServerSceneChanged");
         }
 
-        bool PreflightCheck()
-        {
-            if (!transport)
-            {
-                Debug.LogError("[Net] No Transport assigned on NetworkManager. Add a Transport (e.g., TelepathyTransport) to the same GameObject and assign it.");
-                return false;
-            }
-
-            if (!playerPrefab)
-            {
-                Debug.LogError("[Net] Player Prefab is not assigned on NetworkManager.");
-                return false;
-            }
-
-            if (!playerPrefab.GetComponent<NetworkIdentity>())
-            {
-                Debug.LogError("[Net] Player Prefab must have a NetworkIdentity component.");
-                return false;
-            }
-
-            // Optional: authenticator
-            if (!authenticator)
-                Debug.LogWarning("[Net] No Authenticator set. Guests will be used.");
-
-            return true;
-        }
-
-        // ---------------- Mirror lifecycle ----------------
-
+        // --- Lifecycle ------------------------------------------------------------------
         public override void OnStartServer()
         {
             base.OnStartServer();
-            if (serverSystemsInitialized) return;
-            serverSystemsInitialized = true;
-            Debug.Log("[Server] Started (init once)");
+            // Ensure we have all spawn points cached when the server starts
+            ScanSpawnPoints("OnStartServer");
+            // scrub null entries defensively
+            if (spawnPoints != null)
+                spawnPoints = spawnPoints.Where(t => t != null).ToArray();
         }
 
-        public override void OnStopServer()
+        // --- Scanner --------------------------------------------------------------------
+        void ScanSpawnPoints(string reason)
         {
-            base.OnStopServer();
-            serverSystemsInitialized = false;
-            Debug.Log("[Server] Stopped");
-        }
-
-        public override void OnStartClient()
-        {
-            base.OnStartClient();
-            Debug.Log("[Client] Started");
-        }
-
-        public override void OnClientConnect()
-        {
-            base.OnClientConnect();
-            Debug.Log("[Client] Connected to server");
-        }
-
-        public override void OnServerConnect(NetworkConnectionToClient conn)
-        {
-            if (numPlayers >= maxPlayers)
+            try
             {
-                Debug.LogWarning("[Server] Max players reached, rejecting connection.");
-                conn.Disconnect();
-                return;
+                var list = new List<Transform>(16);
+
+                // From inspector first
+                if (spawnPoints != null)
+                {
+                    foreach (var t in spawnPoints) if (t) list.Add(t);
+                }
+
+                // All NetworkStartPosition in scene (works great when you add that component to markers)
+                var nsp = FindObjectsOfType<NetworkStartPosition>(true);
+                foreach (var s in nsp) if (s && s.transform && !list.Contains(s.transform)) list.Add(s.transform);
+
+                // Any GameObject with the configured tag (safely)
+                if (useTagSearch && !string.IsNullOrWhiteSpace(spawnTag))
+                {
+                    if (TryFindByTag(spawnTag, out var tagged))
+                    {
+                        foreach (var go in tagged) if (go && go.transform && !list.Contains(go.transform)) list.Add(go.transform);
+                    }
+                    else if (verboseLogs)
+                    {
+                        Debug.LogWarning($"[MmoNetworkManager] Tag '{spawnTag}' not defined or no objects found; skipping tag search.");
+                    }
+                }
+
+                // De-dupe & commit
+                spawnPoints = list.Where(t => t != null).Distinct().ToArray();
+                if (verboseLogs)
+                    Debug.Log($"[MmoNetworkManager] ScanSpawnPoints({reason}) found {spawnPoints.Length} spawn(s).");
             }
-            base.OnServerConnect(conn);
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[MmoNetworkManager] ScanSpawnPoints({reason}) failed: {ex.Message}");
+            }
         }
 
+        // --- Player Add -----------------------------------------------------------------
         public override void OnServerAddPlayer(NetworkConnectionToClient conn)
         {
-            // Account/username from authenticator (set during auth handshake)
-            string accountId = conn.authenticationData as string;
-            if (string.IsNullOrWhiteSpace(accountId))
-                accountId = $"Guest{conn.connectionId}";
+            Transform start = ResolveSpawn();
+            Vector3 pos = start ? start.position : Vector3.zero;
+            Quaternion rot = start ? start.rotation : Quaternion.identity;
 
-            // Load saved character data synchronously (simple dev approach)
-            CharacterData data = null;
-            try
+            if (verboseLogs)
             {
-                data = _persistence.LoadCharacterAsync(accountId)
-                                   .ConfigureAwait(false).GetAwaiter().GetResult();
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogWarning($"[Server] LoadCharacter failed for '{accountId}': {ex.Message}");
+                string where = start ? $"{start.name} at {pos}" : "origin (no spawn found)";
+                Debug.Log($"[MmoNetworkManager] Spawning player for conn={conn.connectionId} at {where}");
             }
 
-            // Choose spawn pos/rot
-            Vector3 spawnPos = data != null ? data.position : Vector3.zero;
-            Quaternion spawnRot = Quaternion.Euler(0f, data != null ? data.yaw : 0f, 0f);
-
-            // If no saved position and we have spawn points, pick one
-            if ((spawnPoints != null && spawnPoints.Length > 0) &&
-                (data == null || spawnPos == Vector3.zero))
-            {
-                int i = NetworkServer.connections.Count % spawnPoints.Length;
-                spawnPos = spawnPoints[i].position;
-                spawnRot = spawnPoints[i].rotation;
-            }
-
-            // Instantiate player
-            GameObject player = Instantiate(playerPrefab, spawnPos, spawnRot);
-
-            // Set replicated display name
-            if (player.TryGetComponent(out PlayerName nameComp))
-            {
-                string display = (data != null && !string.IsNullOrWhiteSpace(data.characterName))
-                    ? data.characterName
-                    : accountId;
-                nameComp.ServerSetDisplayName(display);
-            }
-
-            // Finalize spawn
+            GameObject player = Instantiate(playerPrefab, pos, rot);
             NetworkServer.AddPlayerForConnection(conn, player);
-            Debug.Log($"[Server] Player joined → connId={conn.connectionId}, account='{accountId}'");
         }
 
-        public override void OnServerDisconnect(NetworkConnectionToClient conn)
+        // --- Helpers --------------------------------------------------------------------
+        Transform ResolveSpawn()
         {
-            // Save on disconnect
+            // 1) Mirror built-in: NetworkStartPosition
+            var startPos = GetStartPosition();
+            if (startPos)
+                return startPos;
+
+            // 2) Inspector-provided list
+            if (spawnPoints == null || spawnPoints.Length == 0) ScanSpawnPoints("ResolveSpawn");
+            var t = NextFromInspectorList();
+            if (t)
+                return t;
+
+            // 3) Find by tag (safely)
+            if (useTagSearch && !string.IsNullOrWhiteSpace(spawnTag))
+            {
+                if (TryFindByTag(spawnTag, out var tagged) && tagged.Length > 0)
+                    return tagged[0].transform;
+            }
+
+            // 4) Nothing found
+            if (verboseLogs)
+                Debug.LogWarning("[MmoNetworkManager] No spawn points found; using Vector3.zero.");
+            return null;
+        }
+
+        Transform NextFromInspectorList()
+        {
+            if (spawnPoints == null || spawnPoints.Length == 0)
+                return null;
+
+            // remove any nulls at runtime just in case
+            if (spawnPoints.Any(t => t == null))
+                spawnPoints = spawnPoints.Where(t => t != null).ToArray();
+
+            if (spawnPoints.Length == 0)
+                return null;
+
+            if (!roundRobin)
+                return spawnPoints[0];
+
+            // round robin
+            if (_nextIndex >= spawnPoints.Length) _nextIndex = 0;
+            return spawnPoints[_nextIndex++];
+        }
+
+        static bool TryFindByTag(string tag, out GameObject[] tagged)
+        {
+            tagged = Array.Empty<GameObject>();
+            if (string.IsNullOrWhiteSpace(tag))
+                return false;
+
+            // Editor: check if tag exists to avoid exceptions
+#if UNITY_EDITOR
             try
             {
-                string accountId = conn.authenticationData as string;
-                if (!string.IsNullOrWhiteSpace(accountId) && conn.identity != null)
-                {
-                    var player = conn.identity.gameObject;
-                    string displayName = null;
-
-                    if (player.TryGetComponent(out PlayerName pn))
-                        displayName = pn.displayName;
-
-                    var saved = new CharacterData
-                    {
-                        characterName = string.IsNullOrWhiteSpace(displayName) ? accountId : displayName,
-                        position = player.transform.position,
-                        yaw = player.transform.eulerAngles.y
-                    };
-
-                    _ = _persistence.SaveCharacterAsync(accountId, saved);
-                }
+                var tags = UnityEditorInternal.InternalEditorUtility.tags;
+                if (tags == null || Array.IndexOf(tags, tag) < 0)
+                    return false;
             }
-            catch (System.Exception ex)
-            {
-                Debug.LogWarning($"[Server] SaveCharacter failed: {ex.Message}");
-            }
-
-            Debug.Log($"[Server] Player left → connId={conn.connectionId}");
-            base.OnServerDisconnect(conn);
-        }
-
-        void OnApplicationQuit()
-        {
-            // Robust shutdown for editor & player (no Transport.activeTransport usage)
+            catch { /* ignore, fall back to runtime try/catch */ }
+#endif
             try
             {
-                if (NetworkServer.active && NetworkClient.isConnected) StopHost();
-                else if (NetworkServer.active) StopServer();
-                else if (NetworkClient.isConnected) StopClient();
+                tagged = GameObject.FindGameObjectsWithTag(tag);
+                return tagged != null && tagged.Length > 0;
             }
-            catch { /* ignore */ }
+            catch (UnityException)
+            {
+                // tag wasn't defined at runtime — safely skip
+                return false;
+            }
         }
+
+#if UNITY_EDITOR
+        void OnValidate()
+        {
+            if (spawnPoints != null)
+                spawnPoints = spawnPoints.Where(t => t != null).ToArray();
+        }
+#endif
     }
 }
